@@ -1,9 +1,13 @@
 import { z } from "zod/v4";
-import { HTTPError, defineHandler } from "nitro/h3";
+import { defineHandler } from "nitro/h3";
 import { getOpencodeClient } from "../../../../lib/opencode-client";
 import { parsePort, parseRouteParam, parseBody } from "../../../../lib/validation";
 
+const PROMPT_DEDUPE_TTL_MS = 2 * 60 * 1000;
+const recentPromptRequests = new Map<string, number>();
+
 const promptBodySchema = z.object({
+  messageID: z.string().optional(),
   text: z.string().min(1),
   model: z
     .object({
@@ -14,39 +18,63 @@ const promptBodySchema = z.object({
   agent: z.string().optional(),
 });
 
+function prunePromptRequests(now: number) {
+  for (const [key, expiresAt] of recentPromptRequests) {
+    if (expiresAt <= now) {
+      recentPromptRequests.delete(key);
+    }
+  }
+}
+
+function claimPromptRequest(key: string) {
+  const now = Date.now();
+  prunePromptRequests(now);
+
+  const expiresAt = recentPromptRequests.get(key);
+  if (expiresAt && expiresAt > now) {
+    return false;
+  }
+
+  recentPromptRequests.set(key, now + PROMPT_DEDUPE_TTL_MS);
+  return true;
+}
+
 export default defineHandler(async (event) => {
   const port = parsePort(event);
   const id = parseRouteParam(event, "id");
   const body = await parseBody(event, promptBodySchema);
+  const requestKey = body.messageID
+    ? `${port}:${id}:${body.messageID}`
+    : undefined;
+
+  if (requestKey && !claimPromptRequest(requestKey)) {
+    return {
+      accepted: true,
+      duplicate: true,
+      mode: "legacy",
+      messageID: body.messageID,
+    };
+  }
 
   const client = getOpencodeClient(port);
-  const promptBody = {
-    parts: [{ type: "text" as const, text: body.text }],
-    model: body.model,
-    agent: body.agent,
-  };
-
   try {
-    const result = await client.session.prompt({
-      path: { id },
-      body: promptBody,
+    await client.session.promptAsync({
+      sessionID: id,
+      messageID: body.messageID,
+      parts: [{ type: "text" as const, text: body.text }],
+      model: body.model,
+      agent: body.agent,
     });
-    return result.data;
   } catch (error) {
-    const isTimeout =
-      error instanceof Error &&
-      (error.name === "TimeoutError" || error.cause instanceof DOMException);
-
-    if (isTimeout) {
-      const asyncResult = await client.session.promptAsync({
-        path: { id },
-        body: promptBody,
-      });
-      return asyncResult.data;
+    if (requestKey) {
+      recentPromptRequests.delete(requestKey);
     }
-
-    throw new HTTPError(error instanceof Error ? error.message : "Prompt failed", {
-      status: 500,
-    });
+    throw error;
   }
+
+  return {
+    accepted: true,
+    mode: "legacy",
+    messageID: body.messageID,
+  };
 });

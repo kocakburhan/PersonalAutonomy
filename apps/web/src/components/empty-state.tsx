@@ -13,7 +13,7 @@ import {
   useCreateSession,
   useDeleteSession,
 } from "@/hooks/use-opencode";
-import type { Session } from "@opencode-ai/sdk";
+import type { Session } from "@opencode-ai/sdk/v2";
 
 function truncateTitle(title: string, maxLength = 40): string {
   if (title.length <= maxLength) return title;
@@ -152,7 +152,7 @@ export default function EmptyState() {
     <div className="flex h-full items-center justify-center">
       <div className="text-center max-w-md">
         <div className="flex items-center justify-center gap-x-2 mb-4">
-          <img src="/logo.svg" alt="OpenCode Portal" className="size-8" />
+          <img src="/logo.svg" alt="OpenCode Portal" className="size-10" />
           <h2 className="text-2xl font-medium text-fg">OpenCode Portal</h2>
         </div>
         <p className="text-muted-fg mb-6">

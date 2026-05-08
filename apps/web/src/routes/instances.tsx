@@ -21,9 +21,11 @@ interface InstanceData {
   directory: string;
   port: number;
   hostname: string;
-  opencodePid: number;
-  webPid: number;
-  startedAt: string;
+  opencodePid: number | null;
+  webPid: number | null;
+  startedAt: string | null;
+  source?: "config" | "discovered";
+  version?: string | null;
   state: "running";
   status: string;
 }

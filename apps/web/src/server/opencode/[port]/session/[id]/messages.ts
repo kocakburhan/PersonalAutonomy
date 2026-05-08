@@ -5,9 +5,8 @@ import { parsePort, parseRouteParam } from "../../../../lib/validation";
 export default defineHandler(async (event) => {
   const port = parsePort(event);
   const id = parseRouteParam(event, "id");
-
   const client = getOpencodeClient(port);
-  const messages = await client.session.messages({ path: { id } });
+  const messages = await client.session.messages({ sessionID: id });
 
-  return messages.data;
+  return messages.data ?? [];
 });

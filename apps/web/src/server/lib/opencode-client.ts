@@ -1,5 +1,4 @@
-import { createOpencodeClient } from "@opencode-ai/sdk";
-import { createOpencodeClient as createOpencodeClientV2 } from "@opencode-ai/sdk/v2/client";
+import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -7,7 +6,6 @@ import { join } from "path";
 const CONFIG_PATH = join(homedir(), ".portal.json");
 
 const clientCache = new Map<string, ReturnType<typeof createOpencodeClient>>();
-const clientCacheV2 = new Map<string, ReturnType<typeof createOpencodeClientV2>>();
 
 function getHostnameForPort(port: number): string {
   try {
@@ -26,48 +24,31 @@ function getHostnameForPort(port: number): string {
   return "localhost";
 }
 
-export function getOpencodeClient(port: number) {
+export function getOpencodeBaseUrl(port: number) {
   const hostname = getHostnameForPort(port);
-  const key = `${hostname}:${port}`;
+  return `http://${hostname}:${port}`;
+}
 
-  const cached = clientCache.get(key);
+export function getOpencodeClient(port: number) {
+  const baseUrl = getOpencodeBaseUrl(port);
+
+  const cached = clientCache.get(baseUrl);
   if (cached) {
     return cached;
   }
 
   const client = createOpencodeClient({
-    baseUrl: `http://${hostname}:${port}`,
+    baseUrl,
   });
 
-  clientCache.set(key, client);
-  return client;
-}
-
-export function getOpencodeClientV2(port: number) {
-  const hostname = getHostnameForPort(port);
-  const key = `${hostname}:${port}`;
-
-  const cached = clientCacheV2.get(key);
-  if (cached) {
-    return cached;
-  }
-
-  const client = createOpencodeClientV2({
-    baseUrl: `http://${hostname}:${port}`,
-  });
-
-  clientCacheV2.set(key, client);
+  clientCache.set(baseUrl, client);
   return client;
 }
 
 export function clearClientCache(port?: number) {
   if (port) {
-    const hostname = getHostnameForPort(port);
-    const key = `${hostname}:${port}`;
-    clientCache.delete(key);
-    clientCacheV2.delete(key);
+    clientCache.delete(getOpencodeBaseUrl(port));
   } else {
     clientCache.clear();
-    clientCacheV2.clear();
   }
 }

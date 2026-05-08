@@ -53,11 +53,11 @@ const AppSessionIdRoute = AppSessionIdRouteImport.update({
 } as any)
 
 export interface FileRoutesByFullPath {
+  '/': typeof AppIndexRoute
   '/about': typeof AboutRoute
   '/instances': typeof InstancesRoute
   '/diff': typeof AppDiffRoute
   '/settings': typeof AppSettingsRoute
-  '/': typeof AppIndexRoute
   '/session/$id': typeof AppSessionIdRoute
 }
 export interface FileRoutesByTo {
@@ -81,11 +81,11 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
+    | '/'
     | '/about'
     | '/instances'
     | '/diff'
     | '/settings'
-    | '/'
     | '/session/$id'
   fileRoutesByTo: FileRoutesByTo
   to: '/about' | '/instances' | '/diff' | '/settings' | '/' | '/session/$id'
@@ -125,7 +125,7 @@ declare module '@tanstack/react-router' {
     '/_app': {
       id: '/_app'
       path: ''
-      fullPath: ''
+      fullPath: '/'
       preLoaderRoute: typeof AppRouteImport
       parentRoute: typeof rootRouteImport
     }

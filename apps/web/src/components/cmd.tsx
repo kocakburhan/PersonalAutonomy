@@ -28,7 +28,7 @@ import {
 } from "@heroicons/react/24/solid";
 import { useTheme } from "@/providers/theme-provider";
 import { toast } from "@/components/ui/toast";
-import type { Session } from "@opencode-ai/sdk";
+import type { Session } from "@opencode-ai/sdk/v2";
 
 function truncateTitle(title: string, maxLength = 40): string {
   if (title.length <= maxLength) return title;
@@ -42,8 +42,11 @@ interface InstanceData {
   directory: string;
   port: number;
   hostname: string;
-  pid: number;
-  startedAt: string;
+  opencodePid?: number | null;
+  webPid?: number | null;
+  startedAt: string | null;
+  source?: "config" | "discovered";
+  version?: string | null;
   state: "running";
   status: string;
 }

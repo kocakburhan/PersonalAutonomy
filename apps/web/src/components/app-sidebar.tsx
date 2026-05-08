@@ -48,7 +48,7 @@ import {
 } from "@/hooks/use-opencode";
 import { useInstanceStore } from "@/stores/instance-store";
 import { useNavigate, useMatch } from "@tanstack/react-router";
-import type { Session } from "@opencode-ai/sdk";
+import type { Session } from "@opencode-ai/sdk/v2";
 
 interface Project {
   id: string;
