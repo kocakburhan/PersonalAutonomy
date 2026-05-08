@@ -28,7 +28,8 @@ import { useBreadcrumb } from "@/contexts/breadcrumb-context";
 import {
   useSessionMessages,
   addOptimisticMessage,
-  updateOptimisticMessage,
+  reconcileOptimisticMessage,
+  settleOptimisticMessage,
   removeOptimisticMessage,
   mutateSessionMessages,
   type MessageWithParts,
@@ -39,20 +40,95 @@ import {
   type QuestionInfo,
   type QuestionRequest,
 } from "@/hooks/use-session-messages";
-import { useSessions } from "@/hooks/use-opencode";
-import type { Session } from "@opencode-ai/sdk";
+import {
+  useAgents,
+  usePermissions,
+  useQuestions,
+  useSessionStatuses,
+  useSessions,
+} from "@/hooks/use-opencode";
+import type { Agent, Session, SessionMessage } from "@opencode-ai/sdk/v2";
 
 export const Route = createFileRoute("/_app/session/$id")({
   component: SessionPage,
 });
 
-interface QueuedMessage {
-  id: string;
-  text: string;
-}
-
 type PermissionReply = "once" | "always" | "reject";
 
+interface PromptSendResponse {
+  accepted: boolean;
+  duplicate?: boolean;
+  mode?: "v2" | "legacy";
+  message?: SessionMessage;
+  messageID?: string;
+}
+
+function isValidSessionAgent(agents: Agent[], name?: string) {
+  if (!name) return false;
+  return agents.some((agent) => agent.name === name);
+}
+
+function getDefaultSessionAgentName(agents: Agent[]) {
+  return agents.find((agent) => agent.name === "plan")?.name ?? agents[0]?.name;
+}
+
+const OPENCODE_ID_LENGTH = 26;
+let lastMessageIdTimestamp = 0;
+let messageIdCounter = 0;
+
+function getRandomBytes(length: number) {
+  const bytes = new Uint8Array(length);
+  const cryptoObj = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+
+  if (cryptoObj && typeof cryptoObj.getRandomValues === "function") {
+    cryptoObj.getRandomValues(bytes);
+    return bytes;
+  }
+
+  for (let i = 0; i < length; i += 1) {
+    bytes[i] = Math.floor(Math.random() * 256);
+  }
+
+  return bytes;
+}
+
+function randomBase62(length: number) {
+  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  const bytes = getRandomBytes(length);
+  let result = "";
+
+  for (let i = 0; i < length; i += 1) {
+    result += chars[bytes[i] % chars.length];
+  }
+
+  return result;
+}
+
+function createClientMessageId() {
+  const currentTimestamp = Date.now();
+
+  if (currentTimestamp !== lastMessageIdTimestamp) {
+    lastMessageIdTimestamp = currentTimestamp;
+    messageIdCounter = 0;
+  }
+
+  messageIdCounter += 1;
+
+  const encoded =
+    BigInt(currentTimestamp) * BigInt(0x1000) + BigInt(messageIdCounter);
+  const timeBytes = new Uint8Array(6);
+
+  for (let i = 0; i < timeBytes.length; i += 1) {
+    timeBytes[i] = Number(
+      (encoded >> BigInt(40 - 8 * i)) & BigInt(0xff),
+    );
+  }
+
+  const timeHex = Array.from(timeBytes)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `msg_${timeHex}${randomBase62(OPENCODE_ID_LENGTH - timeHex.length)}`;
+}
 
 
 function isToolPart(part: Part): part is ToolPart {
@@ -63,8 +139,6 @@ function parseToolQuestions(part: ToolPart): QuestionInfo[] {
   const input = (part.state?.input || {}) as Record<string, unknown>;
   const rawQuestions = input.questions;
 
-  console.log("[parseToolQuestions] raw input:", JSON.stringify(input, null, 2));
-
   if (!Array.isArray(rawQuestions)) {
     return [];
   }
@@ -74,28 +148,24 @@ function parseToolQuestions(part: ToolPart): QuestionInfo[] {
       (item): item is Record<string, unknown> =>
         typeof item === "object" && item !== null,
     )
-    .map((item) => {
-      console.log("[parseToolQuestions] raw question item:", JSON.stringify(item, null, 2));
-      console.log("[parseToolQuestions] custom field:", item.custom, "type:", typeof item.custom);
-      return {
-        question: String(item.question || ""),
-        header: String(item.header || ""),
-        options: Array.isArray(item.options)
-          ? item.options
-              .filter(
-                (opt): opt is Record<string, unknown> =>
-                  typeof opt === "object" && opt !== null,
-              )
-              .map((opt) => ({
-                label: String(opt.label || ""),
-                description: String(opt.description || ""),
-              }))
-              .filter((opt) => !!opt.label)
-          : [],
-        multiple: Boolean(item.multiple),
-        custom: item.custom !== false,
-      };
-    })
+    .map((item) => ({
+      question: String(item.question || ""),
+      header: String(item.header || ""),
+      options: Array.isArray(item.options)
+        ? item.options
+            .filter(
+              (opt): opt is Record<string, unknown> =>
+                typeof opt === "object" && opt !== null,
+            )
+            .map((opt) => ({
+              label: String(opt.label || ""),
+              description: String(opt.description || ""),
+            }))
+            .filter((opt) => !!opt.label)
+        : [],
+      multiple: Boolean(item.multiple),
+      custom: item.custom !== false,
+    }))
     .filter((q) => !!q.question);
 }
 
@@ -242,12 +312,16 @@ function QuestionAnswerForm({
   port,
   sessionId,
   callID,
+  pendingQuestions,
+  onResolved,
 }: {
   questions: QuestionInfo[];
   partKey: string;
   port: number;
   sessionId: string;
   callID: string;
+  pendingQuestions: QuestionRequest[];
+  onResolved: (requestId: string) => void;
 }) {
   const [selections, setSelections] = useState<Record<number, string[]>>({});
   const [freeformInputs, setFreeformInputs] = useState<Record<number, string>>({});
@@ -274,18 +348,18 @@ function QuestionAnswerForm({
     setSubmitError(null);
 
     try {
-      // Fetch pending questions to get the requestID
-      const listRes = await fetch(`/api/opencode/${port}/questions`);
-      if (!listRes.ok) throw new Error("Failed to fetch pending questions");
-      const pendingQuestions = (await listRes.json()) as QuestionRequest[];
-
-      console.log("[handleSubmit] looking for sessionID:", sessionId, "callID:", callID);
-      console.log("[handleSubmit] pending questions:", JSON.stringify(pendingQuestions, null, 2));
-
-      // Match by callID first, then by sessionID as fallback
-      const match =
+      let match =
         pendingQuestions.find((q) => q.tool?.callID === callID) ??
         pendingQuestions.find((q) => q.sessionID === sessionId);
+
+      if (!match) {
+        const listRes = await fetch(`/api/opencode/${port}/questions`);
+        if (!listRes.ok) throw new Error("Failed to fetch pending questions");
+        const latestQuestions = (await listRes.json()) as QuestionRequest[];
+        match =
+          latestQuestions.find((q) => q.tool?.callID === callID) ??
+          latestQuestions.find((q) => q.sessionID === sessionId);
+      }
 
       if (!match) {
         throw new Error("Question request not found - it may have already been answered");
@@ -311,6 +385,7 @@ function QuestionAnswerForm({
 
       if (!replyRes.ok) throw new Error("Failed to submit answers");
 
+      onResolved(match.id);
       mutateSessionMessages(port, sessionId);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Failed to submit answers");
@@ -500,10 +575,14 @@ const ToolCallItem = memo(function ToolCallItem({
   part,
   port,
   sessionId,
+  pendingQuestions,
+  onQuestionResolved,
 }: {
   part: ToolPart;
   port: number;
   sessionId: string;
+  pendingQuestions: QuestionRequest[];
+  onQuestionResolved: (requestId: string) => void;
 }) {
   const { icon, label, details } = formatToolCall(part);
   const isQuestionTool = (part.tool || "").toLowerCase() === "question";
@@ -539,6 +618,8 @@ const ToolCallItem = memo(function ToolCallItem({
             port={port}
             sessionId={sessionId}
             callID={part.callID || ""}
+            pendingQuestions={pendingQuestions}
+            onResolved={onQuestionResolved}
           />
         ) : (
           <div className="mt-2 space-y-2 text-fg/90">
@@ -577,13 +658,17 @@ const MessageItem = memo(function MessageItem({
   port,
   sessionId,
   pendingPermissions,
+  pendingQuestions,
   onPermissionResolved,
+  onQuestionResolved,
 }: {
   message: MessageWithParts;
   port: number;
   sessionId: string;
   pendingPermissions: PermissionRequest[];
+  pendingQuestions: QuestionRequest[];
   onPermissionResolved: (requestId: string) => void;
+  onQuestionResolved: (requestId: string) => void;
 }) {
   const textContent = getMessageContent(message.parts);
   const isAssistant = message.info.role === "assistant";
@@ -623,6 +708,8 @@ const MessageItem = memo(function MessageItem({
               part={part}
               port={port}
               sessionId={sessionId}
+              pendingQuestions={pendingQuestions}
+              onQuestionResolved={onQuestionResolved}
             />
           ))}
         </div>
@@ -656,15 +743,24 @@ function SessionPage() {
 
   const {
     messages,
+    sessionMessages,
     isLoading: loading,
     error: messagesError,
   } = useSessionMessages(sessionId);
   const { data: sessionsData, mutate: mutateSessions } = useSessions();
+  const { data: agentsData } = useAgents();
+  const { data: sessionStatusesData, mutate: mutateSessionStatuses } =
+    useSessionStatuses();
+  const { data: permissionsData, mutate: mutatePermissions } =
+    usePermissions();
+  const { data: questionsData, mutate: mutateQuestions } = useQuestions();
   const selectedModel = useModelStore((s) => s.selectedModel);
   const selectedAgent = useAgentStore((s) => s.getSelectedAgent(sessionId));
+  const setSelectedAgent = useAgentStore((s) => s.setSelectedAgent);
   const { setPageTitle } = useBreadcrumb();
 
   const sessions: Session[] = sessionsData ?? [];
+  const agents: Agent[] = agentsData ?? [];
   const currentSession = sessions.find((s) => s.id === sessionId);
 
   useEffect(() => {
@@ -674,63 +770,92 @@ function SessionPage() {
     return () => setPageTitle(null);
   }, [currentSession?.title, setPageTitle]);
 
+  useEffect(() => {
+    if (!sessionId || agents.length === 0) return;
+    if (isValidSessionAgent(agents, selectedAgent)) return;
+
+    const fallback = getDefaultSessionAgentName(agents);
+    if (fallback) {
+      setSelectedAgent(sessionId, fallback);
+    }
+  }, [agents, sessionId, selectedAgent, setSelectedAgent]);
+
   const [sendError, setSendError] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
-  const [modelOverride, setModelOverride] = useState(false);
-  const [pendingPermissions, setPendingPermissions] = useState<
-    PermissionRequest[]
-  >([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasScrolledInitially, setHasScrolledInitially] = useState(false);
   const [fileResults, setFileResults] = useState<string[]>([]);
-  const isProcessingQueue = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const submitLockRef = useRef(false);
   const isNearBottomRef = useRef(true);
   const prevMessagesLengthRef = useRef(0);
   const fileMention = useFileMention();
 
   const error = messagesError?.message || sendError;
 
-  const refreshPendingPermissions = useCallback(async () => {
-    if (!port || !sessionId) {
-      setPendingPermissions([]);
-      return;
-    }
+  const sessionStatus = sessionId ? sessionStatusesData?.[sessionId] : undefined;
+  const sending = useMemo(() => {
+    const statusActive =
+      sessionStatus?.type === "busy" || sessionStatus?.type === "retry";
+    const hasOpenAssistant = sessionMessages.some(
+      (message) =>
+        message.type === "assistant" &&
+        message.time.completed === undefined &&
+        message.content.length > 0,
+    );
+    const hasPendingUser = sessionMessages.some(
+      (message) =>
+        message.type === "user" && message.metadata?.portalPending === true,
+    );
 
-    try {
-      const response = await fetch(`/api/opencode/${port}/permissions`);
-      if (!response.ok) return;
-      const data = (await response.json()) as PermissionRequest[];
-      setPendingPermissions(
-        data.filter((item) => item.sessionID === sessionId),
-      );
-    } catch {
-      // Keep current UI state on transient permission polling failures.
-    }
-  }, [port, sessionId]);
+    return isSubmitting || statusActive || hasOpenAssistant || hasPendingUser;
+  }, [isSubmitting, sessionMessages, sessionStatus?.type]);
+
+  const pendingPermissions = useMemo(
+    () =>
+      ((permissionsData ?? []) as PermissionRequest[]).filter(
+        (item) => item.sessionID === sessionId,
+      ),
+    [permissionsData, sessionId],
+  );
+
+  const pendingQuestions = useMemo(
+    () =>
+      ((questionsData ?? []) as QuestionRequest[]).filter(
+        (item) => item.sessionID === sessionId,
+      ),
+    [questionsData, sessionId],
+  );
 
   const handlePermissionResolved = useCallback(
     (requestId: string) => {
-      setPendingPermissions((prev) => prev.filter((p) => p.id !== requestId));
+      void mutatePermissions(
+        (current: PermissionRequest[] | undefined) =>
+          (current ?? []).filter((permission) => permission.id !== requestId),
+        { revalidate: false },
+      );
       if (port && sessionId) {
         mutateSessionMessages(port, sessionId);
       }
-      refreshPendingPermissions();
     },
-    [port, sessionId, refreshPendingPermissions],
+    [port, sessionId, mutatePermissions],
   );
 
-  useEffect(() => {
-    refreshPendingPermissions();
-
-    if (!port || !sessionId) return;
-
-    const interval = window.setInterval(refreshPendingPermissions, 2000);
-    return () => window.clearInterval(interval);
-  }, [port, sessionId, refreshPendingPermissions]);
+  const handleQuestionResolved = useCallback(
+    (requestId: string) => {
+      void mutateQuestions(
+        (current: QuestionRequest[] | undefined) =>
+          (current ?? []).filter((question) => question.id !== requestId),
+        { revalidate: false },
+      );
+      if (port && sessionId) {
+        mutateSessionMessages(port, sessionId);
+      }
+    },
+    [port, sessionId, mutateQuestions],
+  );
 
   const visibleMessageIds = useMemo(
     () => new Set(messages.map((m) => m.info.id)),
@@ -799,15 +924,26 @@ function SessionPage() {
       if (!sessionId || !port) return;
 
       try {
+        const defaultAgent =
+          currentSession?.agent ?? getDefaultSessionAgentName(agents);
+        const agentOverride =
+          selectedAgent && selectedAgent !== defaultAgent
+            ? selectedAgent
+            : undefined;
+
         const response = await fetch(
           `/api/opencode/${port}/session/${sessionId}/prompt`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              messageID: messageId,
               text: messageText,
-              model: modelOverride ? selectedModel : undefined,
-              agent: selectedAgent,
+              model:
+                selectedModel.providerID && selectedModel.modelID
+                  ? selectedModel
+                  : undefined,
+              agent: agentOverride,
             }),
           },
         );
@@ -816,8 +952,16 @@ function SessionPage() {
           throw new Error("Failed to send message");
         }
 
-        mutateSessionMessages(port, sessionId);
+        const result = (await response.json()) as PromptSendResponse;
+        if (result.message?.id) {
+          reconcileOptimisticMessage(port, sessionId, messageId, result.message);
+        } else {
+          settleOptimisticMessage(port, sessionId, messageId);
+        }
+
         isNearBottomRef.current = true;
+        mutateSessionMessages(port, sessionId);
+        mutateSessionStatuses();
         mutateSessions();
       } catch (err) {
         setSendError(
@@ -826,56 +970,36 @@ function SessionPage() {
         removeOptimisticMessage(port, sessionId, messageId);
       }
     },
-    [sessionId, port, mutateSessions, selectedModel, selectedAgent, modelOverride],
+    [
+      sessionId,
+      port,
+      currentSession?.agent,
+      agents,
+      selectedAgent,
+      selectedModel,
+      mutateSessionStatuses,
+      mutateSessions,
+    ],
   );
-
-  const processQueue = useCallback(async () => {
-    if (isProcessingQueue.current || !sessionId || !port) return;
-
-    isProcessingQueue.current = true;
-    setSending(true);
-
-    while (true) {
-      let nextMessage: QueuedMessage | undefined;
-      setMessageQueue((prev) => {
-        if (prev.length === 0) {
-          nextMessage = undefined;
-          return prev;
-        }
-        nextMessage = prev[0];
-        return prev.slice(1);
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      if (!nextMessage) break;
-
-      updateOptimisticMessage(port, sessionId, nextMessage.id, {
-        isQueued: false,
-      });
-      await sendMessage(nextMessage.text, nextMessage.id);
-    }
-
-    isProcessingQueue.current = false;
-    setSending(false);
-  }, [sessionId, port, sendMessage]);
-
-  useEffect(() => {
-    if (messageQueue.length > 0 && !isProcessingQueue.current) {
-      processQueue();
-    }
-  }, [messageQueue, processQueue]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !sessionId || !port) return;
-
     const messageText = input.trim();
-    const messageId = `temp-${Date.now()}`;
+    if (
+      !messageText ||
+      !sessionId ||
+      !port ||
+      sending ||
+      submitLockRef.current
+    ) {
+      return;
+    }
+
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+    const messageId = createClientMessageId();
     setInput("");
     setSendError(null);
-
-    const shouldQueue = sending || messageQueue.length > 0;
 
     const optimisticMessage: MessageWithParts = {
       info: {
@@ -895,15 +1019,33 @@ function SessionPage() {
           text: messageText,
         },
       ],
-      isQueued: shouldQueue,
+      isQueued: sending,
     };
     addOptimisticMessage(port, sessionId, optimisticMessage);
 
-    setMessageQueue((prev) => [...prev, { id: messageId, text: messageText }]);
+    void sendMessage(messageText, messageId).finally(() => {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
+    });
 
     isNearBottomRef.current = true;
     scrollToBottom();
   };
+
+  useEffect(() => {
+    submitLockRef.current = false;
+    setIsSubmitting(false);
+  }, [port, sessionId]);
+
+  useEffect(() => {
+    if (!sending || !port || !sessionId) return;
+
+    const interval = window.setInterval(() => {
+      mutateSessionMessages(port, sessionId);
+    }, 1500);
+
+    return () => window.clearInterval(interval);
+  }, [port, sending, sessionId]);
 
   return (
     <div className="flex h-full flex-col -m-4">
@@ -939,7 +1081,9 @@ function SessionPage() {
                 port={port}
                 sessionId={sessionId}
                 pendingPermissions={pendingPermissions}
+                pendingQuestions={pendingQuestions}
                 onPermissionResolved={handlePermissionResolved}
+                onQuestionResolved={handleQuestionResolved}
               />
             ))}
           {unlinkedPermissions.length > 0 && (
@@ -1029,7 +1173,7 @@ function SessionPage() {
               }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (input.trim()) {
+                if (input.trim() && !sending && !submitLockRef.current) {
                   handleSubmit(e as unknown as React.FormEvent);
                 }
               }
@@ -1043,30 +1187,10 @@ function SessionPage() {
               <AgentSelect sessionId={sessionId} />
             </div>
             <div className="flex items-center justify-between gap-2 sm:justify-end">
-              {modelOverride ? (
-                <div className="flex items-center gap-1.5">
-                  <ModelSelect />
-                  <button
-                    type="button"
-                    onClick={() => setModelOverride(false)}
-                    className="rounded-md px-1.5 py-1 text-xs text-muted-fg hover:text-fg transition-colors"
-                    title="Use default model"
-                  >
-                    &times;
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setModelOverride(true)}
-                  className="rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs text-muted-fg hover:border-fg/30 hover:text-fg transition-colors cursor-pointer"
-                >
-                  Override default model
-                </button>
-              )}
+              <ModelSelect />
               <Button
                 type="submit"
-                isDisabled={!input.trim()}
+                isDisabled={!input.trim() || sending}
                 className="min-w-32"
               >
                 <SendIcon size="16px" />

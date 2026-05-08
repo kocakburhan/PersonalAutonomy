@@ -87,7 +87,13 @@ export function AppSidebarNav() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: prompt, model: selectedModel }),
+        body: JSON.stringify({
+          text: prompt,
+          model:
+            selectedModel.providerID && selectedModel.modelID
+              ? selectedModel
+              : undefined,
+        }),
       },
     );
 

@@ -4,6 +4,7 @@ import { AppSidebarNav } from "@/components/app-sidebar-nav";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { BreadcrumbProvider } from "@/contexts/breadcrumb-context";
 import { useInstanceStore } from "@/stores/instance-store";
+import { useOpencodeEvents } from "@/hooks/use-opencode-events";
 
 export const Route = createFileRoute("/_app")({
   component: AppLayout,
@@ -11,6 +12,7 @@ export const Route = createFileRoute("/_app")({
 
 function AppLayout() {
   const instance = useInstanceStore((s) => s.instance);
+  useOpencodeEvents(instance?.port);
 
   if (!instance) {
     return <Navigate to="/instances" />;

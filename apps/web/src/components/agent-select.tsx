@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useAgents } from "@/hooks/use-opencode";
 import { useAgentStore } from "@/stores/agent-store";
-import type { Agent } from "@opencode-ai/sdk";
+import type { Agent } from "@opencode-ai/sdk/v2";
 
 interface AgentSelectProps {
   sessionId: string | null;
@@ -72,7 +72,7 @@ export function AgentSelect({ sessionId }: AgentSelectProps) {
                   <TooltipTrigger
                     aria-label={`${agent.name} description`}
                     className="p-0.5 text-muted-fg hover:text-fg"
-                    onPress={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
                   >
                     <InformationCircleIcon className="size-4" />
                   </TooltipTrigger>

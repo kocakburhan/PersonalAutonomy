@@ -1,15 +1,10 @@
-import { useEffect } from "react";
-import {
-  Autocomplete,
-  ListBox,
-  Popover,
-  useFilter,
-} from "react-aria-components";
-import { Dialog } from "@/components/ui/dialog";
-import { SearchField, SearchInput } from "@/components/ui/search-field";
+import { useEffect, useMemo } from "react";
 import {
   Select,
+  SelectContent,
+  SelectDescription,
   SelectItem,
+  SelectLabel,
   SelectSection,
   SelectTrigger,
 } from "@/components/ui/select";
@@ -19,6 +14,7 @@ import { useProviders } from "@/hooks/use-opencode";
 interface ModelItem {
   id: string;
   name: string;
+  providerName: string;
 }
 
 interface ModelData {
@@ -66,69 +62,87 @@ function transformProviders(data: {
       models: Object.values(provider.models || {}).map((model) => ({
         id: `${provider.id}/${model.id}`,
         name: model.name,
+        providerName: provider.name,
       })),
     })),
     defaultModel,
   };
 }
 
+function getFirstModelKey(providers: ProviderWithModels[]) {
+  return providers.find((provider) => provider.models.length > 0)?.models[0]
+    ?.id ?? null;
+}
+
 export function ModelSelect() {
   const { data: rawData, isLoading } = useProviders();
-  const { contains } = useFilter({ sensitivity: "base" });
 
   const selectedModel = useModelStore((s) => s.selectedModel);
   const setModelFromKey = useModelStore((s) => s.setModelFromKey);
   const setModelFromDefault = useModelStore((s) => s.setModelFromDefault);
 
-  const data = rawData ? transformProviders(rawData) : null;
+  const data = useMemo(
+    () => (rawData ? transformProviders(rawData) : null),
+    [rawData],
+  );
   const providers = data?.providers ?? [];
   const defaultModel = data?.defaultModel ?? null;
   const selectedModelKey = `${selectedModel.providerID}/${selectedModel.modelID}`;
+  const modelKeys = useMemo(
+    () => new Set(providers.flatMap((provider) => provider.models.map((model) => model.id))),
+    [providers],
+  );
+  const fallbackModel =
+    defaultModel && modelKeys.has(defaultModel)
+      ? defaultModel
+      : getFirstModelKey(providers);
+  const displayModelKey = modelKeys.has(selectedModelKey)
+    ? selectedModelKey
+    : fallbackModel;
 
   useEffect(() => {
-    if (defaultModel) {
-      setModelFromDefault(defaultModel);
+    if (!fallbackModel) return;
+
+    if (!modelKeys.has(selectedModelKey)) {
+      setModelFromKey(fallbackModel);
+      return;
     }
-  }, [defaultModel, setModelFromDefault]);
+
+    setModelFromDefault(fallbackModel);
+  }, [
+    fallbackModel,
+    modelKeys,
+    selectedModelKey,
+    setModelFromDefault,
+    setModelFromKey,
+  ]);
 
   return (
     <Select
       aria-label="Model"
       placeholder={isLoading ? "Loading models..." : "Select a model"}
       className="w-auto"
-      selectedKey={selectedModelKey}
+      isDisabled={isLoading || providers.length === 0}
+      selectedKey={displayModelKey ?? null}
       onSelectionChange={(key) => {
         if (key) {
           setModelFromKey(String(key));
         }
       }}
     >
-      <SelectTrigger className="w-48" />
-      <Popover className="entering:fade-in exiting:fade-out flex max-h-96 w-(--trigger-width) entering:animate-in exiting:animate-out flex-col overflow-hidden rounded-lg border bg-overlay">
-        <Dialog aria-label="Model">
-          <Autocomplete filter={contains}>
-            <div className="border-b bg-muted p-2">
-              <SearchField className="rounded-lg bg-bg" autoFocus>
-                <SearchInput placeholder="Search models..." />
-              </SearchField>
-            </div>
-            <ListBox
-              className="grid max-h-80 w-full grid-cols-[auto_1fr] flex-col gap-y-1 overflow-y-auto p-1 outline-hidden *:[[role='group']+[role=group]]:mt-4 *:[[role='group']+[role=separator]]:mt-1"
-              items={providers}
-            >
-              {(provider) => (
-                <SelectSection title={provider.name} items={provider.models}>
-                  {(model) => (
-                    <SelectItem id={model.id} textValue={model.name}>
-                      {model.name}
-                    </SelectItem>
-                  )}
-                </SelectSection>
-              )}
-            </ListBox>
-          </Autocomplete>
-        </Dialog>
-      </Popover>
+      <SelectTrigger className="w-52" />
+      <SelectContent items={providers}>
+        {(provider) => (
+          <SelectSection title={provider.name} items={provider.models}>
+            {(model) => (
+              <SelectItem id={model.id} textValue={model.name}>
+                <SelectLabel>{model.name}</SelectLabel>
+                <SelectDescription>{model.providerName}</SelectDescription>
+              </SelectItem>
+            )}
+          </SelectSection>
+        )}
+      </SelectContent>
     </Select>
   );
 }

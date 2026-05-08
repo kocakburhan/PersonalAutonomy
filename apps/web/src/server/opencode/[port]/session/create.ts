@@ -14,7 +14,8 @@ export default defineHandler(async (event) => {
 
   const client = getOpencodeClient(port);
   const session = await client.session.create({
-    body: { title: body.title, parentID: body.parentID },
+    title: body.title,
+    parentID: body.parentID,
   });
 
   return session.data;

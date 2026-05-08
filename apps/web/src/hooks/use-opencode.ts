@@ -1,5 +1,6 @@
 import useSWR from "swr";
 import { useInstanceStore } from "@/stores/instance-store";
+import type { SessionStatus } from "@opencode-ai/sdk/v2";
 
 const fetcher = async (url: string) => {
   const res = await fetch(url);
@@ -39,6 +40,22 @@ export function useSessionMessages(id: string | null) {
   return useSWR(
     port && id ? `/api/opencode/${port}/session/${id}/messages` : null,
     fetcher,
+  );
+}
+
+export function useSessionStatuses() {
+  const port = usePort();
+
+  return useSWR<Record<string, SessionStatus>>(
+    port ? `/api/opencode/${port}/session/status` : null,
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      refreshInterval: (statuses) =>
+        Object.values(statuses ?? {}).some((status) => status.type !== "idle")
+          ? 1000
+          : 0,
+    },
   );
 }
 
@@ -126,11 +143,7 @@ export function useGitDiff() {
 export function usePermissions() {
   const port = usePort();
 
-  return useSWR(
-    port ? `/api/opencode/${port}/permissions` : null,
-    fetcher,
-    { refreshInterval: 2000 },
-  );
+  return useSWR(port ? `/api/opencode/${port}/permissions` : null, fetcher);
 }
 
 export function useReplyPermission() {
@@ -156,17 +169,13 @@ export function useReplyPermission() {
 export function useQuestions() {
   const port = usePort();
 
-  return useSWR(
-    port ? `/api/opencode/${port}/questions` : null,
-    fetcher,
-    { refreshInterval: 2000 },
-  );
+  return useSWR(port ? `/api/opencode/${port}/questions` : null, fetcher);
 }
 
 export function useReplyQuestion() {
   const port = usePort();
 
-  return async (requestId: string, answers: Array<{ values: string[] }>) => {
+  return async (requestId: string, answers: string[][]) => {
     if (!port) throw new Error("No instance selected");
 
     const res = await fetch(`/api/opencode/${port}/question/${requestId}/reply`, {
