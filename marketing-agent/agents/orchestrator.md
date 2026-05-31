@@ -103,8 +103,23 @@ Bir pipeline bitince otomatik olarak zincirdeki sonrakini öner:
 - Web sitesi analitik verileri
 - Coder'dan alınan teknik detaylar
 - Müşteri feedback'i (e-postalar, mesajlar)
+- **MCP hatasında manuel veri** — market-scout'tan `DURUM: hata` raporu gelirse, fallback talimatlarını kullanıcıya ilet
 
 Format: "Şu bilgilere ihtiyacım var. Coder'dan şu başlıklarda bir rapor isteyip bana iletir misin?"
+
+## Hata Yönetimi
+
+### mcp-appstore hatası
+Market Scout'tan `DURUM: hata — mcp-appstore çalışmıyor` raporu gelirse:
+1. Market Scout'un verdiği fallback mesajını kullanıcıya aynen ilet
+2. Pipeline'ı DURDURMA — bekleme moduna al
+3. Kullanıcı manuel verileri getirdiğinde Market Scout'a "manuel veri ile devam et" görevi pasla
+4. `state.md`'ye "manuel veri bekleniyor" notu düş
+
+### Diğer MCP/script hataları
+- Hata mesajını oku, kullanıcıya anlaşılır dilde açıkla
+- Alternatif yol varsa öner
+- Yoksa kullanıcıya "bu adımı atlayıp devam edelim mi?" diye sor
 
 ## State Yönetimi
 
@@ -131,3 +146,77 @@ Yeni proje için:
 4. `sessions/_index.md`'e ekle
 5. `product-marketing` skill ile `product-context.md` oluştur
 6. Pipeline'ı başlat
+
+---
+
+## Haftalık Durum Raporu
+
+Kullanıcı `durum raporu` veya `haftalık rapor` dediğinde aşağıdaki formatı kullanarak bir rapor üret. Bu raporu `sessions/[proje]/weekly-report-YYYY-MM-DD.md` olarak kaydet.
+
+Tüm bilgileri `state.md`, `_index.md` ve mevcut session dosyalarından çek. Dış agent çağırmana gerek yok.
+
+### Rapor Formatı
+
+```markdown
+# Haftalık Durum Raporu: [Proje Adı]
+**Tarih:** [bugün] | **Hafta:** [ISO hafta no]
+
+---
+
+## Genel Durum
+- Proje tipi: [mobil-app/saas/fiziksel-isletme/...]
+- Aşama: [aktif pipeline, adım]
+- Başlangıç: [proje başlangıç tarihi]
+- Sağlık: 🟢 İyi / 🟡 Dikkat / 🔴 Kritik
+
+## Bu Hafta Yapılanlar
+| Tarih | Eylem | Sonuç |
+|-------|-------|-------|
+| [tarih] | [pipeline adımı] | [çıktı dosyası] |
+
+(son 7 gündeki state.md değişikliklerinden çıkar)
+
+## Tamamlanan Pipeline'lar
+1. Px — [pipeline adı] (tarih)
+2. ...
+
+## Sıradaki Adım
+[Pipeline] → [Adım]: [açıklama]
+
+## Metrik Özeti (varsa)
+| Metrik | Değer | Hedef | Durum |
+|--------|-------|-------|-------|
+| ... | ... | ... | ... |
+
+(analytics-raporu.md veya buyume-analizi.md'den çek)
+
+## Çıktı Dosyaları (son 7 gün)
+| Dosya | Tarih |
+|-------|-------|
+| [dosya] | [tarih] |
+
+## Bekleyen Kararlar
+- [karar] — [kimden bekleniyor: kullanıcı / coder]
+
+## Bütçe Durumu (varsa)
+| Kalem | Bütçe | Harcanan | Kalan |
+|-------|-------|---------|-------|
+| Reklam | ₺xxx | ₺xxx | ₺xxx |
+
+## Riskler / Blokerler
+- [risk] — [etki]
+
+---
+
+**Sonraki rapor:** [7 gün sonraki tarih]
+```
+
+### Rapor için Veri Toplama
+
+1. `state.md` → aşama, son karar
+2. `_index.md` → proje listesi ve tarihler
+3. `sessions/[proje]/` altındaki en son değişen 10 dosya → son aktivite
+4. Varsa `analytics-raporu.md`, `buyume-analizi.md` → metrik tablosu
+5. Varsa `ad-campaigns.md`, `lokal-reklam-plani.md` → bütçe tablosu
+
+Raporu oluşturduktan sonra kullanıcıya: `📊 Haftalık rapor hazır: sessions/[proje]/weekly-report-[tarih].md` mesajını ver.

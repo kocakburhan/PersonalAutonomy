@@ -1,6 +1,44 @@
 {
-  "version": "2.1",
-  "mcps": [],
+  "version": "2.2",
+  "mcps": [
+    {
+      "id": "mcp-appstore",
+      "name": "App Store MCP Server",
+      "type": "mcp-server",
+      "description": "App Store + Google Play arama, analiz, yorum, keyword, fiyatlandirma araci. 14 tool. ASO ve rakip arastirmasi icin birincil kaynak.",
+      "source": "https://github.com/appreply-co/mcp-appstore",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["vendor/mcp-appstore/server.js"],
+      "install": [
+        "git clone https://github.com/appreply-co/mcp-appstore vendor/mcp-appstore",
+        "npm install --prefix vendor/mcp-appstore"
+      ],
+      "tools": {
+        "search_app": "Isimle app arama (iOS/Android)",
+        "get_app_details": "App detaylari: indirme, puan, histogram, ekran goruntuleri, kategori",
+        "analyze_top_keywords": "Keyword analizi: brand presence, competition level, category distribution",
+        "analyze_reviews": "Yorum analizi: sentiment, keyword frequency, common themes, top negative keywords",
+        "fetch_reviews": "Ham yorumlari cekme (developer response ile)",
+        "get_similar_apps": "Benzer uygulamalar (Customers Also Bought)",
+        "get_pricing_details": "Fiyatlandirma: IAP, subscription, monetization model",
+        "get_developer_info": "Gelistirici portfolyosu (tum app'leri)",
+        "get_version_history": "Versiyon gecmisi ve changelog",
+        "get_android_categories": "Google Play kategori listesi",
+        "get_keyword_scores": "ASO keyword difficulty ve traffic skoru",
+        "suggest_keywords_by_category": "Kategorideki app'lerin keyword'leri",
+        "suggest_keywords_by_similarity": "Benzer app'lerin keyword'leri",
+        "suggest_keywords_by_competition": "Ayni keyword'u hedefleyen app'ler",
+        "suggest_keywords_by_apps": "Belirli app listesine gore keyword",
+        "suggest_keywords_by_seeds": "Seed keyword'lere gore oneriler",
+        "suggest_keywords_by_search": "Arama tamamlama tabanli keyword"
+      },
+      "vps_requirements": {
+        "node": "18+",
+        "ram": "~150MB"
+      }
+    }
+  ],
   "browser_tools": [
     {
       "id": "webwright",
@@ -21,13 +59,13 @@
       "fallback": "Statik HTML icerik icin WebFetch.",
       "vps_requirements": {
         "python": "3.10+",
-        "browser": "Chromium (playwright install chromium)",
         "ram": "~300-400MB"
       }
     }
   ],
   "notes": {
-    "migration": "Puppeteer MCP kaldirildi (v2.0 → v2.1). Webwright ayni isleri daha yetenekli yapiyor, ek RAM maliyeti yok.",
-    "fallback": "Webwright kullanilamiyorsa statik sayfalar icin WebFetch kullan."
+    "migration": "Puppeteer MCP kaldirildi (v2.0). Webwright ayni isleri daha yetenekli yapiyor.",
+    "mcp_appstore": "v2.2'de eklendi. App Store/Google Play verileri icin birincil kaynak. SensorTower'a bedava alternatif.",
+    "revenue_estimation": "mcp-appstore revenue vermez. revenue = rating_count × avg_subscription_price × 0.02 formuluyle kaba tahmin yapilir."
   }
 }

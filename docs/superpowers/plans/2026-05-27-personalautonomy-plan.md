@@ -14,6 +14,143 @@
 
 ---
 
+## Implementasyona Başlamadan Önce Yapılacaklar
+
+> **Önemli:** Bu bölümdeki tüm maddeler kod yazmaya başlamadan **önce** tamamlanmalıdır. Bunlar senin manuel olarak yapman gereken işlemlerdir — agent otomatik yapamaz.
+
+### 1. GitHub: Fork Portal Repository
+
+- [ ] **1a.** Tarayıcıdan https://github.com/hosenur/portal adresine git
+- [ ] **1b.** Sağ üstte **"Fork"** butonuna tıkla → **"Create fork"**
+- [ ] **1c.** Fork tamamlanınca `https://github.com/KULLANICIADIN/portal` adresinde fork'un oluştu
+- [ ] **1d.** Fork Settings → Default branch'in `main` olduğundan emin ol
+- [ ] **1e.** Lokale clone: `git clone https://github.com/kocakburhan/portal.git D:\Projects\PersonalAutonomy`
+
+### 2. VPS: Satın Al ve Temel Kurulum
+
+- [ ] **2a.** [Hetzner Cloud](https://hetzner.com/cloud) hesabı aç
+- [ ] **2b.** **"Add Server"** → şu ayarlarla sunucu oluştur:
+  - Location: **Nuremberg** veya **Falkenstein** (Almanya)
+  - Image: **Ubuntu 24.04 LTS**
+  - Type: **CX22** (2 vCPU, 4 GB RAM, 40 GB SSD, 20 TB trafik, ~4€/ay)
+  - IPv4: **Açık**
+- [ ] **2c.** Sunucu IP adresini ve root şifresini kaydet
+- [ ] **2d.** VPS'e SSH ile bağlan ve aşağıdaki temel kurulumları yap (Task 6.0):
+  - `apt update && apt upgrade -y`
+  - Zaman dilimi: `timedatectl set-timezone Europe/Istanbul`
+  - Hostname: `hostnamectl set-hostname pa-vps`
+  - Swap: 2 GB oluştur
+  - SSH güvenliği: `PermitRootLogin prohibit-password`, `PasswordAuthentication no`
+  - `nitro-runner` sistem kullanıcısı oluştur
+  - Gerekli yazılımları kur: Docker, Docker Compose, Bun, OpenCode, PM2, Nginx, certbot, git, curl, unzip, cron
+  - Dizin yapısını oluştur: `/opt/personalautonomy/`, `/opt/personalautonomy/workspaces/`, `/opt/personalautonomy/templates/roles/`, `/opt/personalautonomy/scripts/`, `/opt/personalautonomy/logs/`, `/opt/backups/db/`
+  - UFW firewall: 22, 80, 443 aç; 5432 kapat
+
+### 3. Domain ve DNS
+
+- [ ] **3a.** Domain satın al (Namecheap, Cloudflare, GoDaddy vb.) → örn: `personalautonomy.com`
+- [ ] **3b.** DNS yönetiminde A kaydı ekle: `api.SITEN.COM → VPS_IP_ADRESI`
+- [ ] **3c.** DNS yönetiminde A kaydı ekle (frontend Vercel'de olacaksa): `SITEN.COM → Vercel IP` veya CNAME
+- [ ] **3d.** DNS propagation'ı bekle (5-30 dk) → `nslookup api.SITEN.COM` ile doğrula
+
+### 4. Kendi Bilgisayarında (Windows) SSH + rclone
+
+- [ ] **4a.** OpenSSH Client'ın yüklü olduğunu doğrula:
+  ```powershell
+  Get-WindowsCapability -Online | Where-Object Name -like "OpenSSH.Client*"
+  ```
+  `State: NotPresent` ise: `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`
+- [ ] **4b.** VPS için SSH anahtarı oluştur:
+  ```powershell
+  ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\vps_root" -N '""'
+  ```
+- [ ] **4c.** Açık anahtarı Hetzner panelinde SSH Keys'e ekle:
+  - `Get-Content "$env:USERPROFILE\.ssh\vps_root.pub"` → çıkan metni kopyala
+  - Hetzner Cloud Console → SSH Keys → Add SSH Key → Name: `kendi-pc`, Key: kopyaladığın anahtar
+  - VPS sunucusunu Rebuild et (SSH Key: `kendi-pc` seçili)
+- [ ] **4d.** Şifresiz bağlantıyı test et: `ssh -i "$env:USERPROFILE\.ssh\vps_root" root@VPS_IP "echo OK"`
+- [ ] **4e.** SSH config dosyasına kolay bağlantı ekle:
+  ```powershell
+  @"
+  Host pa-vps
+      HostName VPS_IP_ADRESI
+      User root
+      IdentityFile ~/.ssh/vps_root
+  "@ | Out-File -Append "$env:USERPROFILE\.ssh\config"
+  ```
+- [ ] **4f.** rclone kur: `winget install rclone` → `rclone version` ile doğrula
+- [ ] **4g.** rclone'ı VPS'e bağlanacak şekilde yapılandır (`rclone config`):
+  - Remote name: `vps`
+  - Storage type: `sftp`
+  - Host: VPS IP adresi
+  - User: `root`
+  - key_file: `C:\Users\KULLANICIADIN\.ssh\vps_yedek` (Task 6.2'deki yedek anahtarı)
+- [ ] **4h.** rclone bağlantısını test et: `rclone lsd vps:/opt`
+
+### 5. CI/CD ve Servis Hesapları (Ücretsiz)
+
+- [ ] **5a.** [Vercel](https://vercel.com) hesabı aç (GitHub ile sign up)
+- [ ] **5b.** Vercel'de token oluştur: Settings → Tokens → Create Token → adı `personalautonomy-ci` → token'ı kaydet
+- [ ] **5c.** [UptimeRobot](https://uptimerobot.com) hesabı aç (Google ile sign up) → monitoring için
+- [ ] **5d.** [healthchecks.io](https://healthchecks.io) hesabı aç (email ile sign up) → cron monitoring için
+
+### 6. Telegram Uyarı Botu (Opsiyonel — Alarmlar İçin Önerilir)
+
+- [ ] **6a.** Telegram'da `@BotFather` ile bot oluştur:
+  - `/start` → `/newbot` → isim ver (örn: `PersonalAutonomy Uyari`) → kullanıcı adı ver (örn: `pa_uyari_bot`)
+  - BotFather'ın verdiği **token'ı** kaydet
+- [ ] **6b.** Yeni bot'una mesaj at (`/start` veya "merhaba")
+- [ ] **6c.** Chat ID'ni öğren: tarayıcıdan `https://api.telegram.org/botTOKEN/getUpdates` → `"chat":{"id":123456789}` → bu numarayı kaydet
+- [ ] **6d.** UptimeRobot'a Telegram entegrasyonu ekle (Alert Contacts → Telegram → Token + Chat ID)
+- [ ] **6e.** healthchecks.io'ya Telegram entegrasyonu ekle (Integrations → Telegram → Token + Chat ID)
+
+### 7. GitHub Secrets (Settings → Secrets and variables → Actions)
+
+- [ ] **7a.** `VPS_HOST` → VPS IP adresi (örn: `5.161.142.10`)
+- [ ] **7b.** `VPS_USER` → `root`
+- [ ] **7c.** `VPS_SSH_KEY` → `vps_root` özel anahtarının **tam içeriği** (`Get-Content "$env:USERPROFILE\.ssh\vps_root"`)
+- [ ] **7d.** `VERCEL_TOKEN` → Adım 5b'de oluşturduğun Vercel token
+
+### 8. Karar Verilmesi Gereken Değerler (`.env` için)
+
+| Değişken | Açıklama | Örnek |
+|----------|----------|-------|
+| `DB_PASSWORD` | PostgreSQL şifresi (güçlü olsun) | `r4nd0m-s3cur3-p4ss` |
+| `DATABASE_URL` | PostgreSQL bağlantı URL'i | `postgresql://postgres:PAROLA@localhost:5432/personalautonomy` |
+| `JWT_SECRET` | 64 karakter rastgele string | `openssl rand -base64 64` ile üret |
+| `VITE_API_URL` | Production'da API adresi | `https://api.SITEN.COM` |
+| `OPENCODE_PATH` | OpenCode binary yolu | `/usr/local/bin/opencode` |
+| `WORKSPACES_ROOT` | Workspace dizinleri root | `/opt/personalautonomy/workspaces` |
+| `TEMPLATES_ROOT` | Rol template dizini | `./templates/roles` |
+| `WORKSPACE_SCRIPT_PATH` | Workspace script yolu | `/opt/personalautonomy/scripts/manage-workspace.sh` |
+| `MINIMAX_API_KEY` | Görsel üretimi için (Task 7.9) | Minimax API key (sonradan eklenecek) |
+
+- [ ] **8a.** `JWT_SECRET` üret: VPS'te `openssl rand -base64 64` veya lokalde PowerShell ile rastgele string oluştur
+- [ ] **8b.** `DB_PASSWORD` belirle (güçlü, en az 16 karakter)
+
+### 9. Ön Kontrol Listesi (Her Şey Tamam mı?)
+
+Kod yazmaya başlamadan önce aşağıdakilerin hepsi **✅** olmalı:
+
+| # | Kontrol | Durum |
+|---|---------|-------|
+| 1 | Portal fork'landı ve lokale clone'landı | ☐ |
+| 2 | VPS satın alındı, IP ve root erişimi hazır | ☐ |
+| 3 | VPS temel kurulumları yapıldı (yazılımlar, dizinler, firewall) | ☐ |
+| 4 | Domain satın alındı, DNS A kaydı eklendi | ☐ |
+| 5 | SSH anahtarı oluşturuldu, VPS'e şifresiz bağlanılıyor | ☐ |
+| 6 | rclone kuruldu ve VPS bağlantısı test edildi | ☐ |
+| 7 | Vercel hesabı açıldı, token alındı | ☐ |
+| 8 | UptimeRobot hesabı açıldı | ☐ |
+| 9 | healthchecks.io hesabı açıldı | ☐ |
+| 10 | Telegram bot oluşturuldu, token + chat ID kaydedildi | ☐ |
+| 11 | GitHub Secrets (VPS_HOST, VPS_USER, VPS_SSH_KEY, VERCEL_TOKEN) eklendi | ☐ |
+| 12 | `.env` değerleri (DB_PASSWORD, JWT_SECRET, VITE_API_URL) belirlendi | ☐ |
+
+> **Tahmini süre:** Tüm bu adımlar 1-2 saat sürer (VPS kurulumu + DNS propagation bekleme süresi dahil).
+
+---
+
 ## File Structure
 
 > **Note:** Portal'da Nitro v3 server kodu `apps/web/src/server/` altındadır (eski `apps/web/server/` değil). Bu plandaki tüm server dosya yolları bu yapıya göredir. Portal'ın mevcut OpenCode proxy route'ları `src/server/opencode/` altında korunur, yeni route'lar yanına eklenir.

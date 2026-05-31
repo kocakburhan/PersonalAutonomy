@@ -64,11 +64,19 @@ Kullanıcı: "Elimde bir fikir var"
 
 ### 5.2 — Pazar Araştırması
 **Agent:** Market Scout
+**MCP Tool'ları (mobil app ise):**
+- `search_app(term, platform)` → kullanıcının fikrine yakın app'leri bul
+- `get_app_details(appId, platform)` → her rakip için detay
+- `analyze_reviews(appId, platform, sort="rating", num=300)` → şikayet pattern'ları
+- `get_keyword_scores(keyword, platform)` → ASO zorluk/trafik skoru
+- `analyze_top_keywords(keyword, platform)` → brand dominance, competition level
+- `get_pricing_details(appId, platform)` → monetization modeli
+
 **Eylem:** Ürün tipine göre doğru kaynaklardan veri topla.
-- Rakip ürünlerin sayfalarını tara
-- Kullanıcı yorumlarını analiz et
-- Pazar büyüklüğü ve trend verisi topla
-- Google Trends'te ilgili anahtar kelimeleri kontrol et
+- Mobil app → **mcp-appstore** (yukarıdaki tool'lar)
+- SaaS → **webwright** ile G2/Capterra/Reddit
+- Fiziksel işletme → **webwright** ile Google Maps/GBP
+- Google Trends → **webwright** veya `pytrends`
 
 **Çıktı formatı (`pazar-arastirmasi.md`):**
 ```markdown

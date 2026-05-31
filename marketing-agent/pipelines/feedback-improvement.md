@@ -77,11 +77,16 @@ Kullanıcılardan:
 
 ### 3.2 — Kullanıcı Yorumu Analizi
 **Agent:** Market Scout
+**MCP Tool'ları:**
+- `fetch_reviews(appId, platform, sort="rating", num=500)` → düşük puanlı ham yorumları çek
+- `analyze_reviews(appId, platform, num=500)` → sentiment dağılımı, keyword frequency, common themes, top negative keywords
+- Fiziksel işletme: `webwright` ile Google Maps/GBP yorumları + Şikayetvar/forumlar
+
 **Eylem:**
-- App Store/Google Play yorumlarını çek
-- Google Maps/GBP yorumlarını çek (fiziksel işletme)
-- Sosyal medya bahislerini tara
-- Forum/şikayet sitesi yorumlarını kontrol et
+- App Store/Google Play yorumları → **mcp-appstore**
+- Google Maps/GBP yorumları → **webwright**
+- Sosyal medya bahisleri → **webwright**
+- Forum/şikayet sitesi yorumları → **webwright**
 
 **Çıktı (`yorum-analizi.md`):**
 ```markdown

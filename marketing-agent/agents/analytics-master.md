@@ -15,6 +15,7 @@ Metrik takibi, veri analizi, performans raporlaması ve PDF üretimi yapan agent
 
 - `scripts/analyze_page.py` — Tek sayfa analizi (SEO, içerik, dönüşüm skoru)
 - `scripts/generate_pdf_report.py` — Markdown raporu PDF'e çevirme
+- `scripts/estimate_revenue.py` — App Store verisinden gelir tahmini. `--ratings X --price Y` veya `--json mcp_verisi.json`
 
 ## Aldığın Görevler
 

@@ -63,11 +63,15 @@ Kullanıcı giriş yapar
 
 ### 1.2 — Fırsat Haritası
 **Agent:** Market Scout
+**MCP Tool'ları:**
+- Mobil App: `search_app` ile kategorilerdeki top app'leri bul, `analyze_top_keywords` ile keyword trafiğini ölç
+- SaaS: `webwright` ile G2/Capterra/Reddit tara
+- Fiziksel İşletme: `webwright` ile Google Maps/GBP tara
+
 **Eylem:** Ürün tipine uygun tüm kaynakları tara.
-- App Store / Google Play (mobil app)
-- G2 / Capterra / Reddit (SaaS)
-- Google Maps (fiziksel işletme)
-- vb.
+- App Store / Google Play → **mcp-appstore `search_app` + `analyze_top_keywords`**
+- G2 / Capterra / Reddit → **webwright**
+- Google Maps / GBP → **webwright**
 
 **Not:** Kullanıcı sektör belirtmişse sadece o sektörü tara. Belirtmemişse tüm kategorileri tara ve en hızlı büyüyenleri sırala.
 
@@ -83,6 +87,13 @@ Kullanıcı giriş yapar
 
 ### 1.4 — Derin Kategori Analizi
 **Agent:** Market Scout
+**MCP Tool'ları (her rakip app için):**
+1. `get_app_details(appId, platform)` → indirme, puan histogramı, kategori, ekran görüntüleri
+2. `analyze_reviews(appId, platform, sort="rating", num=200)` → sentiment, top negative keywords, common themes
+3. `get_pricing_details(appId, platform)` → IAP fiyatları, monetization modeli
+4. `get_similar_apps(appId, platform)` → rakip keşfi
+5. **Revenue tahmini:** `rating_count × avg_subscription_price × 0.02`
+
 **Süre:** Kategorideki rakip sayısına bağlı. En az 3, en çok 10 rakip analiz edilir.
 
 ### 1.5 — Stratejik Analiz

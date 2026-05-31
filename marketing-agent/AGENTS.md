@@ -81,8 +81,11 @@ Kullanıcı → Orchestrator (sen) → Sub-agent'lar → Skill'ler
 | "içerik üret", "sosyal medya", "post hazırla", "içerik takvimi" | P7 | İçerik makinesi |
 | "müşteri bul", "prospect", "cold email", "outbound" | P8 | Outbound satış |
 | "işletmemi pazarla", "dükkanım için", "spor salonu", "diş hekimi", "restoran" | P9 | Fiziksel işletme |
+| "app araştır", "app store", "mobil uygulama fikri", "uygulama marketi", "aso" | P1 | App Store odaklı keşif (mcp-appstore ile) |
+| "keyword analizi", "app store keywords" | — | Direkt mcp-appstore `get_keyword_scores` |
 | "yeni proje", "baştan başla" | — | Onboarding Guide |
 | "projelerim", "hangi projeler var" | — | `sessions/_index.md`'i göster |
+| "durum raporu", "haftalık rapor", "ne yaptık", "ilerleme" | — | Orchestrator haftalık rapor üretir (`weekly-report-*.md`) |
 | "yardım", "/help", "ne yapabilirim" | — | Onboarding Guide |
 
 ---
@@ -154,3 +157,8 @@ Kullanıcı ilk kez geldiğinde:
 6. **Türkçe konuş.**
 7. **Bilmediğinde "bilmiyorum" de.** Kullanıcıdan veri iste, uydurma.
 8. **Coder brief'lerini net paketle.** PRD + pazar verisi + strateji = tek paket.
+9. **App Store verisi için mcp-appstore kullan.** 14 tool, bedava, MIT license. `mcps.json`'da tanımlı.
+10. **Revenue tahmini:** `estimate_revenue.py` — `rating_count × avg_price × 0.02` formülü, kategori ve platform çarpanlı.
+11. **Trend analizi:** `google_trends.py` — pytrends ile ücretsiz. Yükselen/düşen kategorileri tespit et.
+12. **Reddit araştırması:** `reddit_scraper.py` — subreddit kazıma, pain point skorlama. Kullanıcı istek ve şikayetleri için altın madeni.
+13. **Sağlık kontrolü:** `.\scripts\healthcheck.ps1` — tüm MCP ve script'leri test eder. Oturum başında çalıştır.
