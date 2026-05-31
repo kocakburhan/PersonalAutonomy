@@ -131,7 +131,7 @@ OPSİYONEL (varsa):
 **Agent:** Orchestrator
 
 ```
-📋 LANSMA PAKETİ HAZIR
+📋 LANSMAN PAKETİ HAZIR
 
 İşte lansman için hazırladıklarımız:
 • Pazarlama stratejisi → [dosya]

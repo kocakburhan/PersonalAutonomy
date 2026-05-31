@@ -1,0 +1,15 @@
+L7308 (7 FFFD):   - /market emails "SaaS CRM �r�n�" � Email sequence mant�kl� m�?
+L7309 (6 FFFD):   - /market social "yapay zeka" � 30 g�nl�k takvim d�zg�n m�?
+L7342 (0 FFFD): 
+L7351 (9 FFFD): - [ ] **RAM kullan�m�n� �l�** � htop ile Chromium headless RAM t�ketimini izle, 400MB alt�nda m�?
+L7419 (0 FFFD): - [ ] **Tüm skill'leri uçtan uca test et** - Her /market komutu için 1 gerçek site
+L7431 (0 FFFD): ## Phase 7 Güncellemesi: Marketing Agent v3 - coreyhaines31/marketingskills Entegrasyonu
+L7453 (0 FFFD): ### Task 7.9: Social Post Agent - Konuşarak İçerik Üretimi
+L7455 (0 FFFD): > **Amaç:** Pazarlama Asistanı kullanıcının OpenCode ile doğal sohbet halindeyken, geçmiş paylaşımları ve proje bağlamını dikkate alarak günlük sosyal medya gönderisi hazırlaması. Kullanıcı teknik det
+L7463 (0 FFFD): `
+L7465 (0 FFFD):     -  "Bugünkü Instagram gönderisini hazırlayalım"
+L7480 (0 FFFD):     -      +--------------------------------+
+L7496 (0 FFFD):     -      +--------------------------------+
+L7505 (0 FFFD): | 1 | **social-post agent** | Tüm akışı yöneten özel OpenCode agent'ı | templates/roles/marketing-agent/agents/social-post.md |
+L7508 (0 FFFD): | 4 | **Web UI "Paylaşımlar" sekmesi** | Kullanıcının üretilen tüm gönderileri listeleyip görselleri indirebildiği arayüz. | apps/web/src/routes/posts.tsx |
+L7608 (0 FFFD): > **NOT:** Görsel üretimi için hangi API'nin kullanılacağı (Minimax, DALL-E, Stable Diffusion, Midjourney vb.) implementasyon aşamasında kararlaştırılacaktır. Seçim kriterleri: API maliyeti, görsel ka

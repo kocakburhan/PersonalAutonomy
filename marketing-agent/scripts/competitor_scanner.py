@@ -42,8 +42,11 @@ class CompetitorParser(HTMLParser):
             if any(s in href for s in ("twitter.com", "facebook.com", "linkedin.com", "instagram.com")):
                 self.social_links.append(href)
 
-    def handle_endtag(self, _tag):
-        self.current_heading = ""
+    def handle_endtag(self, tag):
+        if tag in ("h1", "h2", "h3"):
+            self.current_heading = ""
+        if tag == "title":
+            self.in_title = False
 
     def handle_data(self, data):
         data = data.strip()

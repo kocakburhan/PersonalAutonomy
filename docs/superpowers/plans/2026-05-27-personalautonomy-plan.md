@@ -1,4 +1,4 @@
-﻿# PersonalAutonomy Implementation Plan
+# PersonalAutonomy Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -123,7 +123,7 @@
 | `WORKSPACES_ROOT` | Workspace dizinleri root | `/opt/personalautonomy/workspaces` |
 | `TEMPLATES_ROOT` | Rol template dizini | `./templates/roles` |
 | `WORKSPACE_SCRIPT_PATH` | Workspace script yolu | `/opt/personalautonomy/scripts/manage-workspace.sh` |
-| `MINIMAX_API_KEY` | Görsel üretimi için (Task 7.9) | Minimax API key (sonradan eklenecek) |
+| `MINIMAX_API_KEY` | Görsel üretimi için (Task 7.11) | Minimax API key (sonradan eklenecek) |
 
 - [ ] **8a.** `JWT_SECRET` üret: VPS'te `openssl rand -base64 64` veya lokalde PowerShell ile rastgele string oluştur
 - [ ] **8b.** `DB_PASSWORD` belirle (güçlü, en az 16 karakter)
@@ -523,15 +523,23 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   role: one(roles, { fields: [users.roleId], references: [roles.id] }),
   workspaces: many(workspaces),
   authSessions: many(authSessions),
+  opencodeSessions: many(opencodeSessions),
+  userFiles: many(userFiles),
+  auditLogs: many(auditLogs),
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   user: one(users, { fields: [workspaces.userId], references: [users.id] }),
-  config: one(workspaceConfigs, {
-    fields: [workspaces.id],
-    references: [workspaceConfigs.workspaceId],
-  }),
+  config: one(workspaceConfigs),
   opencodeSessions: many(opencodeSessions),
+  userFiles: many(userFiles),
+}));
+
+export const workspaceConfigsRelations = relations(workspaceConfigs, ({ one }) => ({
+  workspace: one(workspaces, {
+    fields: [workspaceConfigs.workspaceId],
+    references: [workspaces.id],
+  }),
 }));
 
 export const opencodeSessionsRelations = relations(opencodeSessions, ({ one, many }) => ({
@@ -541,6 +549,22 @@ export const opencodeSessionsRelations = relations(opencodeSessions, ({ one, man
   }),
   user: one(users, { fields: [opencodeSessions.userId], references: [users.id] }),
   messages: many(chatMessages),
+}));
+
+export const chatMessagesRelations = relations(chatMessages, ({ one }) => ({
+  session: one(opencodeSessions, {
+    fields: [chatMessages.sessionId],
+    references: [opencodeSessions.id],
+  }),
+}));
+
+export const userFilesRelations = relations(userFiles, ({ one }) => ({
+  user: one(users, { fields: [userFiles.userId], references: [users.id] }),
+  workspace: one(workspaces, { fields: [userFiles.workspaceId], references: [workspaces.id] }),
+}));
+
+export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
+  user: one(users, { fields: [auditLogs.userId], references: [users.id] }),
 }));
 ```
 
@@ -580,14 +604,13 @@ git commit -m "feat: add database schema with all tables"
 ---
 
 ## Phase 2: Auth System
-
-> **NOT — Nitro v3 API:** Portal Nitro v3 kullanır. Bu plandaki kodların tamamında aşağıdaki dönüşüm uygulanmalıdır:
-> - `import { createError, ... } from "h3"` → `import { HTTPError, ... } from "nitro/h3"`
-> - `import { defineEventHandler } from "h3"` → `import { defineHandler } from "nitro/h3"`
-> - `throw createError({ statusCode: 400, statusMessage: "..." })` → `throw new HTTPError("...", { status: 400 })`
-> - `import { getRouterParam, readBody, getHeaders, ... } from "h3"` → `import { ... } from "nitro/h3"`
+> **NOT — Nitro v3 API:** Portal Nitro v3 kullanır. Bu plandaki tüm kod örnekleri v3 API'sine göre güncellenmiştir:
+> - `defineHandler` kullanılır (`defineEventHandler` değil)
+> - `throw new HTTPError(statusCode, { message: "..." })` kullanılır (`createError` değil)
+> - Tüm importlar `"nitro/h3"` modülünden yapılır (`"h3"` değil)
+> - `getRouterParam`, `readBody`, `getHeaders`, `parseCookies` vb. `"nitro/h3"` üzerinden import edilir
 >
-> Aşağıdaki kod blokları bu dönüşümleri göstermek içindir. Gerçek implementasyonda tüm endpoint'lerde bu API kullanılmalıdır.
+> Bu plandaki tüm endpoint kodları bu dönüşümü zaten içermektedir. Ayrıca herhangi bir değişiklik yapmanıza gerek yoktur.
 
 ### Task 2.1: Password and JWT Utilities
 
@@ -744,7 +767,7 @@ Create `apps/web/src/server/utils/rate-limit.ts`:
 ```typescript
 // In-memory rate limiter. Works for single process (MVP).
 // NOTE: If scaling to PM2 cluster mode later, migrate to Redis-backed storage.
-const attempts = new Map<string, { count: number; blockedUntil: number }>();
+const attempts = new Map<string, { count: number; blockedUntil: number; lastAttemptAt: number }>();
 
 const MAX_ATTEMPTS = 15;
 const BLOCK_DURATION = 15 * 60 * 1000; // 15 minutes
@@ -758,7 +781,7 @@ export function checkRateLimit(key: string): { allowed: boolean; remaining: numb
   }
 
   if (!record || record.blockedUntil <= now) {
-    attempts.set(key, { count: 0, blockedUntil: 0 });
+    attempts.set(key, { count: 0, blockedUntil: 0, lastAttemptAt: now });
   }
 
   return { allowed: true, remaining: MAX_ATTEMPTS - (record?.count ?? 0) };
@@ -766,13 +789,15 @@ export function checkRateLimit(key: string): { allowed: boolean; remaining: numb
 
 export function recordFailedAttempt(key: string): void {
   const record = attempts.get(key);
+  const now = Date.now();
   if (!record) {
-    attempts.set(key, { count: 1, blockedUntil: 0 });
+    attempts.set(key, { count: 1, blockedUntil: 0, lastAttemptAt: now });
     return;
   }
   record.count++;
+  record.lastAttemptAt = now;
   if (record.count >= MAX_ATTEMPTS) {
-    record.blockedUntil = Date.now() + BLOCK_DURATION;
+    record.blockedUntil = now + BLOCK_DURATION;
   }
 }
 
@@ -784,11 +809,10 @@ export function resetAttempts(key: string): void {
 const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, record] of attempts) {
-    // Remove expired blocks AND stale non-blocked entries (no activity for 1 hour)
+    // Remove expired blocks AND stale non-blocked entries (idle for at least 1 hour)
     if (record.blockedUntil > 0 && now > record.blockedUntil + 3600000) {
       attempts.delete(key);
-    } else if (record.blockedUntil === 0 && record.count > 0) {
-      // Remove entries that were never blocked but are sitting idle
+    } else if (record.blockedUntil === 0 && now - record.lastAttemptAt > 3600000) {
       attempts.delete(key);
     }
   }
@@ -854,14 +878,14 @@ export async function authMiddleware(
   }
 
   if (!token) {
-    throw createError({ statusCode: 401, statusMessage: "Missing authorization header or cookie" });
+    throw new HTTPError(401, { message: "Missing authorization header or cookie" });
   }
   let payload: TokenPayload;
 
   try {
     payload = await verifyToken(token);
   } catch {
-    throw createError({ statusCode: 401, statusMessage: "Invalid or expired token" });
+    throw new HTTPError(401, { message: "Invalid or expired token" });
   }
 
   const [user] = await db
@@ -871,7 +895,7 @@ export async function authMiddleware(
     .limit(1);
 
   if (!user || !user.isActive) {
-    throw createError({ statusCode: 403, statusMessage: "Account inactive or deleted" });
+    throw new HTTPError(403, { message: "Account inactive or deleted" });
   }
 
   return { user: { ...payload, isActive: true } };
@@ -888,10 +912,7 @@ import { AuthContext } from "./auth";
 
 export function requireAdmin(ctx: AuthContext): void {
   if (ctx.user.role !== "admin") {
-    throw createError({
-      statusCode: 403,
-      statusMessage: "Admin access required",
-    });
+    throw new HTTPError(403, { message: "Admin access required" });
   }
 }
 ```
@@ -922,20 +943,17 @@ import { hashPassword, verifyPassword } from "../../utils/password";
 import { signToken } from "../../utils/jwt";
 import { checkRateLimit, recordFailedAttempt, resetAttempts } from "../../utils/rate-limit";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const body = await readBody(event);
   const { login, password } = body;
 
   if (!login || !password) {
-    throw createError({ statusCode: 400, statusMessage: "Login and password required" });
+    throw new HTTPError(400, { message: "Login and password required" });
   }
 
   const rateCheck = checkRateLimit(login);
   if (!rateCheck.allowed) {
-    throw createError({
-      statusCode: 429,
-      statusMessage: "Too many attempts. Try again in 15 minutes.",
-    });
+    throw new HTTPError(429, { message: "Too many attempts. Try again in 15 minutes." });
   }
 
   const [user] = await db
@@ -959,13 +977,13 @@ export default defineEventHandler(async (event) => {
 
   if (!user || !user.isActive) {
     recordFailedAttempt(login);
-    throw createError({ statusCode: 401, statusMessage: "Invalid credentials" });
+    throw new HTTPError(401, { message: "Invalid credentials" });
   }
 
   const valid = await verifyPassword(password, user.passwordHash);
   if (!valid) {
     recordFailedAttempt(login);
-    throw createError({ statusCode: 401, statusMessage: "Invalid credentials" });
+    throw new HTTPError(401, { message: "Invalid credentials" });
   }
 
   resetAttempts(login);
@@ -1018,7 +1036,7 @@ import { authMiddleware } from "../../middleware/auth";
 import { db, schema } from "../../db";
 import { eq } from "drizzle-orm";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
 
   const [user] = await db
@@ -1048,7 +1066,7 @@ import { eq } from "drizzle-orm";
 import { db, schema } from "../../db";
 import { authMiddleware } from "../../middleware/auth";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   try {
     const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
 
@@ -1124,10 +1142,13 @@ case $ACTION in
     # Template'ler git'te olduğu ve deploy'da geldiği için silinme riski yoktur.
     # Workspace kullanıcısı symlink'i takip edebilir (template dizini chmod 755). Değiştiremez (read-only).
     if [ -n "$ROLE_NAME" ] && [ -d "$TEMPLATES_ROOT/$ROLE_NAME" ]; then
-      ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/AGENTS.md" "$WORKSPACES_ROOT/$USER_ID/AGENTS.md" 2>/dev/null || true
-      ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/skills" "$WORKSPACES_ROOT/$USER_ID/skills" 2>/dev/null || true
-      ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/agents" "$WORKSPACES_ROOT/$USER_ID/agents" 2>/dev/null || true
-      ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/mcps.json" "$WORKSPACES_ROOT/$USER_ID/mcps.json" 2>/dev/null || true
+      [ -f "$TEMPLATES_ROOT/$ROLE_NAME/AGENTS.md" ] && ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/AGENTS.md" "$WORKSPACES_ROOT/$USER_ID/AGENTS.md" 2>/dev/null || true
+      [ -d "$TEMPLATES_ROOT/$ROLE_NAME/skills" ] && ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/skills" "$WORKSPACES_ROOT/$USER_ID/skills" 2>/dev/null || true
+      [ -d "$TEMPLATES_ROOT/$ROLE_NAME/agents" ] && ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/agents" "$WORKSPACES_ROOT/$USER_ID/agents" 2>/dev/null || true
+      [ -d "$TEMPLATES_ROOT/$ROLE_NAME/pipelines" ] && ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/pipelines" "$WORKSPACES_ROOT/$USER_ID/pipelines" 2>/dev/null || true
+      [ -d "$TEMPLATES_ROOT/$ROLE_NAME/templates" ] && ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/templates" "$WORKSPACES_ROOT/$USER_ID/templates" 2>/dev/null || true
+      [ -d "$TEMPLATES_ROOT/$ROLE_NAME/vendor" ] && ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/vendor" "$WORKSPACES_ROOT/$USER_ID/vendor" 2>/dev/null || true
+      [ -f "$TEMPLATES_ROOT/$ROLE_NAME/mcps.json" ] && ln -sfn "$TEMPLATES_ROOT/$ROLE_NAME/mcps.json" "$WORKSPACES_ROOT/$USER_ID/mcps.json" 2>/dev/null || true
     fi
 
     # User-owned writable dirs — also accessible to nitro-runner group for file uploads
@@ -1372,7 +1393,7 @@ import { eq, isNull } from "drizzle-orm";
 import { authMiddleware } from "../../middleware/auth";
 import { requireAdmin } from "../../middleware/admin";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
@@ -1408,7 +1429,7 @@ import { hashPassword } from "../../utils/password";
 import { createWorkspace } from "../../services/workspace-manager";
 import { logAudit } from "../../services/audit-logger";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
@@ -1416,7 +1437,7 @@ export default defineEventHandler(async (event) => {
   const { username, email, displayName, password, roleName } = body;
 
   if (!username || !displayName || !password || !roleName) {
-    throw createError({ statusCode: 400, statusMessage: "Missing required fields" });
+    throw new HTTPError(400, { message: "Missing required fields" });
   }
 
   const [existing] = await db
@@ -1426,7 +1447,7 @@ export default defineEventHandler(async (event) => {
     .limit(1);
 
   if (existing) {
-    throw createError({ statusCode: 409, statusMessage: "Username already taken" });
+    throw new HTTPError(409, { message: "Username already taken" });
   }
 
   const [role] = await db
@@ -1436,7 +1457,7 @@ export default defineEventHandler(async (event) => {
     .limit(1);
 
   if (!role) {
-    throw createError({ statusCode: 400, statusMessage: "Invalid role" });
+    throw new HTTPError(400, { message: "Invalid role" });
   }
 
   const passwordHash = await hashPassword(password);
@@ -1484,12 +1505,12 @@ import { requireAdmin } from "../../middleware/admin";
 import { deleteWorkspace } from "../../services/workspace-manager";
 import { logAudit } from "../../services/audit-logger";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
   const userId = getRouterParam(event, "id");
-  if (!userId) throw createError({ statusCode: 400, statusMessage: "Missing user ID" });
+  if (!userId) throw new HTTPError(400, { message: "Missing user ID" });
 
   const method = event.method;
 
@@ -1513,7 +1534,7 @@ export default defineEventHandler(async (event) => {
       .where(eq(schema.users.id, userId))
       .limit(1);
 
-    if (!user) throw createError({ statusCode: 404, statusMessage: "User not found" });
+    if (!user) throw new HTTPError(404, { message: "User not found" });
     return { user };
   }
 
@@ -1571,7 +1592,7 @@ export default defineEventHandler(async (event) => {
     return { success: true };
   }
 
-  throw createError({ statusCode: 405, statusMessage: "Method not allowed" });
+  throw new HTTPError(405, { message: "Method not allowed" });
 });
 ```
 
@@ -1607,23 +1628,25 @@ const OPENCODE_PATH = process.env.OPENCODE_PATH || "opencode";
 // Global port tracker to prevent TOCTOU race conditions
 const usedPorts = new Set<number>();
 
-function holdPort(): Promise<{ port: number; release: () => void }> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.listen(0, () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
-      usedPorts.add(port);
-      resolve({
-        port,
-        release: () => {
-          server.close();
-          usedPorts.delete(port);
-        },
+// Find a free port and track it in usedPorts (closes immediately so child process can bind)
+async function getFreePort(): Promise<number> {
+  const { createServer } = await import("net");
+  for (let i = 0; i < 50; i++) {
+    const port = await new Promise<number>((resolve, reject) => {
+      const server = createServer();
+      server.listen(0, () => {
+        const addr = server.address();
+        const p = typeof addr === "object" && addr !== null ? addr.port : 0;
+        server.close(() => resolve(p));
       });
+      server.on("error", reject);
     });
-    server.on("error", reject);
-  });
+    if (!usedPorts.has(port)) {
+      usedPorts.add(port);
+      return port;
+    }
+  }
+  throw new Error("Failed to find a free port");
 }
 
 export interface SpawnOptions {
@@ -1641,7 +1664,10 @@ export async function spawnOpenCode(options: SpawnOptions): Promise<{
   port: number;
   releasePort: () => void;
 }> {
-  const { port, release: releasePort } = await holdPort();
+  const port = await getFreePort();
+  const releasePort = () => {
+    usedPorts.delete(port);
+  };
 
   const defaultLimits = {
     maxRam: 4 * 1024 * 1024 * 1024,
@@ -1690,12 +1716,12 @@ export async function spawnOpenCode(options: SpawnOptions): Promise<{
   return { process: proc, port, releasePort };
 }
 
-export async function killOpenCode(proc: ChildProcess): Promise<void> {
+export async function killOpenCode(pid: number): Promise<void> {
   try {
-    await execAsync(`sudo kill -TERM -${proc.pid}`, { timeout: 5000 });
+    await execAsync(`sudo kill -TERM -${pid}`, { timeout: 5000 });
   } catch {
     try {
-      await execAsync(`sudo kill -KILL -${proc.pid}`, { timeout: 5000 });
+      await execAsync(`sudo kill -KILL -${pid}`, { timeout: 5000 });
     } catch {
       // Process already dead
     }
@@ -1761,9 +1787,8 @@ Create `apps/web/src/server/services/session-manager.ts`:
 import { db, schema } from "../db";
 import { eq, and, lt, isNull } from "drizzle-orm";
 import { spawnOpenCode, killOpenCode } from "./opencode-manager";
-import { ChildProcess } from "child_process";
 
-const activeProcesses = new Map<string, { proc: ChildProcess; port: number }>();
+const activeProcesses = new Map<string, { pid: number; port: number }>();
 
 export async function startSession(userId: string, workspaceId: string, model?: string) {
   const [workspace] = await db
@@ -1799,7 +1824,7 @@ export async function startSession(userId: string, workspaceId: string, model?: 
   // Wait for OpenCode to be ready (10 second timeout)
   const ready = await waitForReady(port, 10000);
   if (!ready) {
-    await killOpenCode(proc);
+    await killOpenCode(proc.pid);
     releasePort();
     throw new Error("OpenCode failed to start within timeout");
   }
@@ -1819,7 +1844,7 @@ export async function startSession(userId: string, workspaceId: string, model?: 
     })
     .returning();
 
-  activeProcesses.set(session.id, { proc, port });
+  activeProcesses.set(session.id, { pid: proc.pid, port });
 
   return { session, port };
 }
@@ -1851,7 +1876,7 @@ export async function sendMessage(sessionId: string, message: string) {
 export async function stopSession(sessionId: string) {
   const active = activeProcesses.get(sessionId);
   if (active) {
-    await killOpenCode(active.proc);
+    await killOpenCode(active.pid);
     activeProcesses.delete(sessionId);
   }
 
@@ -1951,16 +1976,21 @@ if (typeof process !== "undefined") {
 // This handles PM2 restart scenarios where in-memory activeProcesses map is lost
 (async () => {
   const orphaned = await db
-    .select({ id: schema.opencodeSessions.id, pid: schema.opencodeSessions.pid })
+    .select({
+      id: schema.opencodeSessions.id,
+      pid: schema.opencodeSessions.pid,
+      port: schema.opencodeSessions.port,
+    })
     .from(schema.opencodeSessions)
     .where(eq(schema.opencodeSessions.status, "active"));
 
   for (const session of orphaned) {
     // Check if the PID is actually running
-    if (session.pid) {
+    if (session.pid && session.port) {
       try {
         process.kill(session.pid, 0); // Signal 0 = check existence
-        // Process is still alive — leave it, skip marking as closed
+        // Process is still alive — restore in-memory mapping!
+        activeProcesses.set(session.id, { pid: session.pid, port: session.port });
         continue;
       } catch {
         // Process is dead — fall through, will be marked as closed below
@@ -1982,22 +2012,19 @@ Create `apps/web/src/server/api/sessions/start.post.ts`:
 import { authMiddleware } from "../../middleware/auth";
 import { startSession } from "../../services/session-manager";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   const body = await readBody(event);
   const { workspaceId, model } = body;
 
   const wsId = workspaceId || ctx.user.workspaceId;
-  if (!wsId) throw createError({ statusCode: 400, statusMessage: "No workspace available" });
+  if (!wsId) throw new HTTPError(400, { message: "No workspace available" });
 
   try {
     const { session, port } = await startSession(ctx.user.userId, wsId, model);
     return { session, port };
   } catch (error: unknown) {
-    throw createError({
-      statusCode: 500,
-      statusMessage: `Failed to start agent: ${error instanceof Error ? error.message : String(error)}`,
-    });
+    throw new HTTPError(500, { message: `Failed to start agent: ${error instanceof Error ? error.message : String(error)}` });
   }
 });
 ```
@@ -2012,10 +2039,10 @@ import { authMiddleware } from "../../../middleware/auth";
 import { sendMessage } from "../../../services/session-manager";
 import { db, schema } from "../../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   const sessionId = getRouterParam(event, "id");
-  if (!sessionId) throw createError({ statusCode: 400 });
+  if (!sessionId) throw new HTTPError(400);
 
   const [session] = await db
     .select({ userId: schema.opencodeSessions.userId })
@@ -2023,9 +2050,9 @@ export default defineEventHandler(async (event) => {
     .where(eq(schema.opencodeSessions.id, sessionId))
     .limit(1);
 
-  if (!session) throw createError({ statusCode: 404, statusMessage: "Session not found" });
+  if (!session) throw new HTTPError(404, { message: "Session not found" });
   if (session.userId !== ctx.user.userId) {
-    throw createError({ statusCode: 403, statusMessage: "Not your session" });
+    throw new HTTPError(403, { message: "Not your session" });
   }
 
   const body = await readBody(event);
@@ -2055,10 +2082,10 @@ import { eq } from "drizzle-orm";
 import { authMiddleware } from "../../../middleware/auth";
 import { db, schema } from "../../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   const sessionId = getRouterParam(event, "id");
-  if (!sessionId) throw createError({ statusCode: 400 });
+  if (!sessionId) throw new HTTPError(400);
 
   const [session] = await db
     .select({
@@ -2070,12 +2097,12 @@ export default defineEventHandler(async (event) => {
     .where(eq(schema.opencodeSessions.id, sessionId))
     .limit(1);
 
-  if (!session) throw createError({ statusCode: 404, statusMessage: "Session not found" });
+  if (!session) throw new HTTPError(404, { message: "Session not found" });
   if (session.userId !== ctx.user.userId && ctx.user.role !== "admin") {
-    throw createError({ statusCode: 403, statusMessage: "Not your session" });
+    throw new HTTPError(403, { message: "Not your session" });
   }
   if (session.status !== "active" || !session.port) {
-    throw createError({ statusCode: 400, statusMessage: "Session not active" });
+    throw new HTTPError(400, { message: "Session not active" });
   }
 
   // Update last active timestamp
@@ -2142,10 +2169,10 @@ import { authMiddleware } from "../../../middleware/auth";
 import { stopSession } from "../../../services/session-manager";
 import { db, schema } from "../../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   const sessionId = getRouterParam(event, "id");
-  if (!sessionId) throw createError({ statusCode: 400 });
+  if (!sessionId) throw new HTTPError(400);
 
   const [session] = await db
     .select({ userId: schema.opencodeSessions.userId })
@@ -2153,9 +2180,9 @@ export default defineEventHandler(async (event) => {
     .where(eq(schema.opencodeSessions.id, sessionId))
     .limit(1);
 
-  if (!session) throw createError({ statusCode: 404, statusMessage: "Session not found" });
+  if (!session) throw new HTTPError(404, { message: "Session not found" });
   if (session.userId !== ctx.user.userId && ctx.user.role !== "admin") {
-    throw createError({ statusCode: 403, statusMessage: "Not your session" });
+    throw new HTTPError(403, { message: "Not your session" });
   }
 
   await stopSession(sessionId);
@@ -2173,7 +2200,7 @@ import { authMiddleware } from "../../middleware/auth";
 import { listSessions } from "../../services/session-manager";
 import { db, schema } from "../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
 
   let workspaceId: string | undefined;
@@ -2217,7 +2244,7 @@ import { authMiddleware } from "../../middleware/auth";
 import { requireAdmin } from "../../middleware/admin";
 import { db, schema } from "../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
 
   if (ctx.user.role === "admin") {
@@ -2262,10 +2289,10 @@ import { authMiddleware } from "../../middleware/auth";
 import { requireAdmin } from "../../middleware/admin";
 import { db, schema } from "../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   const workspaceId = getRouterParam(event, "id");
-  if (!workspaceId) throw createError({ statusCode: 400, statusMessage: "Missing workspace ID" });
+  if (!workspaceId) throw new HTTPError(400, { message: "Missing workspace ID" });
 
   const [workspace] = await db
     .select({
@@ -2281,11 +2308,11 @@ export default defineEventHandler(async (event) => {
     .where(eq(schema.workspaces.id, workspaceId))
     .limit(1);
 
-  if (!workspace) throw createError({ statusCode: 404, statusMessage: "Workspace not found" });
+  if (!workspace) throw new HTTPError(404, { message: "Workspace not found" });
 
   // Non-admin users can only access their own workspace
   if (ctx.user.role !== "admin" && ctx.user.workspaceId !== workspaceId) {
-    throw createError({ statusCode: 403, statusMessage: "Access denied" });
+    throw new HTTPError(403, { message: "Access denied" });
   }
 
   return { workspace };
@@ -2319,10 +2346,10 @@ import { db, schema } from "../../../db";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   const workspaceId = getRouterParam(event, "id");
-  if (!workspaceId) throw createError({ statusCode: 400 });
+  if (!workspaceId) throw new HTTPError(400);
 
   const [workspace] = await db
     .select({
@@ -2333,23 +2360,23 @@ export default defineEventHandler(async (event) => {
     .where(eq(schema.workspaces.id, workspaceId))
     .limit(1);
 
-  if (!workspace) throw createError({ statusCode: 404, statusMessage: "Workspace not found" });
+  if (!workspace) throw new HTTPError(404, { message: "Workspace not found" });
 
   const formData = await readMultipartFormData(event);
-  if (!formData?.length) throw createError({ statusCode: 400, statusMessage: "No file uploaded" });
+  if (!formData?.length) throw new HTTPError(400, { message: "No file uploaded" });
 
   const file = formData[0];
-  if (!file.filename) throw createError({ statusCode: 400, statusMessage: "Invalid file" });
+  if (!file.filename) throw new HTTPError(400, { message: "Invalid file" });
 
   // File size check to prevent disk exhaustion and OOM
   if (file.data.length > MAX_FILE_SIZE) {
-    throw createError({ statusCode: 413, statusMessage: `File too large. Maximum: ${MAX_FILE_SIZE / 1024 / 1024} MB` });
+    throw new HTTPError(413, { message: `File too large. Maximum: ${MAX_FILE_SIZE / 1024 / 1024} MB` });
   }
 
   const dataDir = join(workspace.workspacePath, "data");
   const safeName = file.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
   if (!safeName || safeName.startsWith(".")) {
-    throw createError({ statusCode: 400, statusMessage: "Invalid filename" });
+    throw new HTTPError(400, { message: "Invalid filename" });
   }
   const filePath = join(dataDir, safeName);
   await writeFile(filePath, file.data);
@@ -3688,7 +3715,7 @@ import { authMiddleware } from "../../middleware/auth";
 import { requireAdmin } from "../../middleware/admin";
 import { db, schema } from "../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
@@ -3707,7 +3734,7 @@ import { authMiddleware } from "../../middleware/auth";
 import { requireAdmin } from "../../middleware/admin";
 import { db, schema } from "../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
@@ -3731,7 +3758,7 @@ import { authMiddleware } from "../../middleware/auth";
 import { requireAdmin } from "../../middleware/admin";
 import { db, schema } from "../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
@@ -3755,7 +3782,7 @@ import { authMiddleware } from "../../middleware/auth";
 import { requireAdmin } from "../../middleware/admin";
 import { db, schema } from "../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
@@ -3809,12 +3836,13 @@ Rename `apps/web/src/server/api/admin/roles.get.ts` to `apps/web/src/server/api/
 Create `apps/web/src/server/api/admin/roles/index.post.ts`:
 
 ```typescript
+import { eq } from "drizzle-orm";
 import { authMiddleware } from "../../../middleware/auth";
 import { requireAdmin } from "../../../middleware/admin";
 import { db, schema } from "../../../db";
 import { logAudit } from "../../../services/audit-logger";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
@@ -3822,7 +3850,7 @@ export default defineEventHandler(async (event) => {
   const { name, description, templatePath, isDefault } = body;
 
   if (!name || !templatePath) {
-    throw createError({ statusCode: 400, statusMessage: "Name and templatePath required" });
+    throw new HTTPError(400, { message: "Name and templatePath required" });
   }
 
   const [existing] = await db
@@ -3832,7 +3860,7 @@ export default defineEventHandler(async (event) => {
     .limit(1);
 
   if (existing) {
-    throw createError({ statusCode: 409, statusMessage: "Role name already exists" });
+    throw new HTTPError(409, { message: "Role name already exists" });
   }
 
   const [role] = await db
@@ -3863,12 +3891,12 @@ import { requireAdmin } from "../../../middleware/admin";
 import { db, schema } from "../../../db";
 import { logAudit } from "../../../services/audit-logger";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
   const roleId = getRouterParam(event, "id");
-  if (!roleId) throw createError({ statusCode: 400, statusMessage: "Missing role ID" });
+  if (!roleId) throw new HTTPError(400, { message: "Missing role ID" });
 
   const method = event.method;
 
@@ -3879,7 +3907,7 @@ export default defineEventHandler(async (event) => {
       .where(eq(schema.roles.id, Number(roleId)))
       .limit(1);
 
-    if (!role) throw createError({ statusCode: 404, statusMessage: "Role not found" });
+    if (!role) throw new HTTPError(404, { message: "Role not found" });
 
     const permissions = await db
       .select()
@@ -3922,7 +3950,7 @@ export default defineEventHandler(async (event) => {
       .where(eq(schema.roles.id, Number(roleId)))
       .limit(1);
 
-    if (!role) throw createError({ statusCode: 404, statusMessage: "Role not found" });
+    if (!role) throw new HTTPError(404, { message: "Role not found" });
 
     // Check if role is in use
     const [userWithRole] = await db
@@ -3932,10 +3960,7 @@ export default defineEventHandler(async (event) => {
       .limit(1);
 
     if (userWithRole) {
-      throw createError({
-        statusCode: 409,
-        statusMessage: "Cannot delete role: users are assigned to it",
-      });
+      throw new HTTPError(409, { message: "Cannot delete role: users are assigned to it" });
     }
 
     await db.delete(schema.rolePermissions).where(eq(schema.rolePermissions.roleId, Number(roleId)));
@@ -3951,7 +3976,7 @@ export default defineEventHandler(async (event) => {
     return { success: true };
   }
 
-  throw createError({ statusCode: 405, statusMessage: "Method not allowed" });
+  throw new HTTPError(405, { message: "Method not allowed" });
 });
 ```
 
@@ -4236,10 +4261,10 @@ import { eq } from "drizzle-orm";
 import { authMiddleware } from "../../../middleware/auth";
 import { db, schema } from "../../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   const sessionId = getRouterParam(event, "id");
-  if (!sessionId) throw createError({ statusCode: 400 });
+  if (!sessionId) throw new HTTPError(400);
 
   const [session] = await db
     .select({
@@ -4262,11 +4287,11 @@ export default defineEventHandler(async (event) => {
     .where(eq(schema.opencodeSessions.id, sessionId))
     .limit(1);
 
-  if (!session) throw createError({ statusCode: 404, statusMessage: "Session not found" });
+  if (!session) throw new HTTPError(404, { message: "Session not found" });
 
   // Admin or owner can view
   if (session.userId !== ctx.user.userId && ctx.user.role !== "admin") {
-    throw createError({ statusCode: 403, statusMessage: "Access denied" });
+    throw new HTTPError(403, { message: "Access denied" });
   }
 
   const messages = await db
@@ -4484,12 +4509,12 @@ import { requireAdmin } from "../../../middleware/admin";
 import { db, schema } from "../../../db";
 import { logAudit } from "../../../services/audit-logger";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
   const fileId = getRouterParam(event, "id");
-  if (!fileId) throw createError({ statusCode: 400, statusMessage: "Missing file ID" });
+  if (!fileId) throw new HTTPError(400, { message: "Missing file ID" });
 
   if (event.method === "DELETE") {
     const [file] = await db
@@ -4498,7 +4523,7 @@ export default defineEventHandler(async (event) => {
       .where(eq(schema.userFiles.id, fileId))
       .limit(1);
 
-    if (!file) throw createError({ statusCode: 404, statusMessage: "File not found" });
+    if (!file) throw new HTTPError(404, { message: "File not found" });
 
     // Delete from filesystem
     try {
@@ -4520,7 +4545,7 @@ export default defineEventHandler(async (event) => {
     return { success: true };
   }
 
-  throw createError({ statusCode: 405, statusMessage: "Method not allowed" });
+  throw new HTTPError(405, { message: "Method not allowed" });
 });
 ```
 
@@ -4536,12 +4561,12 @@ import { authMiddleware } from "../../../../middleware/auth";
 import { requireAdmin } from "../../../../middleware/admin";
 import { db, schema } from "../../../../db";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
   const fileId = getRouterParam(event, "id");
-  if (!fileId) throw createError({ statusCode: 400, statusMessage: "Missing file ID" });
+  if (!fileId) throw new HTTPError(400, { message: "Missing file ID" });
 
   const [file] = await db
     .select()
@@ -4549,10 +4574,10 @@ export default defineEventHandler(async (event) => {
     .where(eq(schema.userFiles.id, fileId))
     .limit(1);
 
-  if (!file) throw createError({ statusCode: 404, statusMessage: "File not found" });
+  if (!file) throw new HTTPError(404, { message: "File not found" });
 
   if (!existsSync(file.filePath)) {
-    throw createError({ statusCode: 404, statusMessage: "File not found on disk" });
+    throw new HTTPError(404, { message: "File not found on disk" });
   }
 
   setHeader(event, "Content-Type", file.mimeType || "application/octet-stream");
@@ -5007,7 +5032,7 @@ export async function writeWorkspaceFile(
   const { promisify } = await import("util");
   const execAsync = promisify(exec);
   try {
-    await execAsync(`chown ${linuxUser}:${linuxUser} "${fullPath}"`, { timeout: 3000 });
+    await execAsync(`sudo chown ${linuxUser}:${linuxUser} "${fullPath}"`, { timeout: 3000 });
   } catch {
     // Ownership is best-effort; file is still writable by nitro-runner
   }
@@ -5051,12 +5076,12 @@ import { requireAdmin } from "../../../../middleware/admin";
 import { db, schema } from "../../../../db";
 import { listWorkspaceFiles } from "../../../../services/workspace-file-manager";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
   const userId = getRouterParam(event, "id");
-  if (!userId) throw createError({ statusCode: 400, statusMessage: "Missing user ID" });
+  if (!userId) throw new HTTPError(400, { message: "Missing user ID" });
 
   const [user] = await db
     .select({
@@ -5070,7 +5095,7 @@ export default defineEventHandler(async (event) => {
     .where(eq(schema.users.id, userId))
     .limit(1);
 
-  if (!user) throw createError({ statusCode: 404, statusMessage: "User or workspace not found" });
+  if (!user) throw new HTTPError(404, { message: "User or workspace not found" });
 
   const files = await listWorkspaceFiles(user.linuxUser);
 
@@ -5090,12 +5115,12 @@ import { db, schema } from "../../../../../db";
 import { readWorkspaceFile, writeWorkspaceFile, resetToTemplate } from "../../../../../services/workspace-file-manager";
 import { logAudit } from "../../../../../services/audit-logger";
 
-export default defineEventHandler(async (event) => {
+export default defineHandler(async (event) => {
   const ctx = await authMiddleware(getHeaders(event), parseCookies(event));
   requireAdmin(ctx);
 
   const userId = getRouterParam(event, "id");
-  if (!userId) throw createError({ statusCode: 400, statusMessage: "Missing user ID" });
+  if (!userId) throw new HTTPError(400, { message: "Missing user ID" });
 
   const [user] = await db
     .select({
@@ -5108,17 +5133,17 @@ export default defineEventHandler(async (event) => {
     .where(eq(schema.users.id, userId))
     .limit(1);
 
-  if (!user) throw createError({ statusCode: 404, statusMessage: "User or workspace not found" });
+  if (!user) throw new HTTPError(404, { message: "User or workspace not found" });
 
   const method = getHeader(event, "x-http-method-override") || event.method;
 
   if (method === "GET") {
     const query = getQuery(event);
     const fileName = query.file as string;
-    if (!fileName) throw createError({ statusCode: 400, statusMessage: "?file= param required" });
+    if (!fileName) throw new HTTPError(400, { message: "?file= param required" });
 
     const result = await readWorkspaceFile(user.linuxUser, fileName);
-    if (!result) throw createError({ statusCode: 404, statusMessage: "File not found" });
+    if (!result) throw new HTTPError(404, { message: "File not found" });
 
     return { fileName, ...result };
   }
@@ -5128,13 +5153,13 @@ export default defineEventHandler(async (event) => {
     const { fileName, content } = body;
 
     if (!fileName || content === undefined) {
-      throw createError({ statusCode: 400, statusMessage: "fileName and content required" });
+      throw new HTTPError(400, { message: "fileName and content required" });
     }
 
     // Only allow editing config files, not data/ or logs/
     const allowedFiles = ["AGENTS.md", "mcps.json"];
     if (!allowedFiles.includes(fileName)) {
-      throw createError({ statusCode: 400, statusMessage: `Cannot edit ${fileName}. Allowed: ${allowedFiles.join(", ")}` });
+      throw new HTTPError(400, { message: `Cannot edit ${fileName}. Allowed: ${allowedFiles.join(", ")}` });
     }
 
     const result = await writeWorkspaceFile(user.linuxUser, fileName, content);
@@ -5154,7 +5179,7 @@ export default defineEventHandler(async (event) => {
     const body = await readBody(event);
     const { fileName } = body;
 
-    if (!fileName) throw createError({ statusCode: 400, statusMessage: "fileName required" });
+    if (!fileName) throw new HTTPError(400, { message: "fileName required" });
 
     await resetToTemplate(user.linuxUser, fileName, user.roleName);
 
@@ -5169,7 +5194,7 @@ export default defineEventHandler(async (event) => {
     return { success: true };
   }
 
-  throw createError({ statusCode: 405, statusMessage: "Method not allowed" });
+  throw new HTTPError(405, { message: "Method not allowed" });
 });
 ```
 
@@ -5847,8 +5872,17 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/api.personalautonomy.com/privkey.pem;
 
     location /api/ {
+        # Allow Vercel production and preview deployments dynamically for cross-origin cookies
+        set $cors_origin "";
+        if ($http_origin ~* "^https?://(personalautonomy\.vercel\.app|personalautonomy-git-[^.]+\.vercel\.app|personalautonomy-[^.]+\.vercel\.app)$") {
+            set $cors_origin $http_origin;
+        }
+        if ($cors_origin = "") {
+            set $cors_origin "https://personalautonomy.vercel.app";
+        }
+
         if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin' 'https://personalautonomy.vercel.app' always;
+            add_header 'Access-Control-Allow-Origin' $cors_origin always;
             add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
             add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type' always;
             add_header 'Access-Control-Allow-Credentials' 'true' always;
@@ -5857,7 +5891,7 @@ server {
             return 204;
         }
 
-        add_header 'Access-Control-Allow-Origin' 'https://personalautonomy.vercel.app' always;
+        add_header 'Access-Control-Allow-Origin' $cors_origin always;
         add_header 'Access-Control-Allow-Credentials' 'true' always;
 
         proxy_pass http://127.0.0.1:3000;
@@ -5937,7 +5971,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Deploy to Vercel
-        run: npx vercel --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
+        run: npx vercel --cwd apps/web --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
 ```
 
 - [ ] **Step 5: Configure UFW firewall (VPS'te çalıştır)**
@@ -6476,7 +6510,7 @@ Create `apps/web/src/server/api/health.get.ts`:
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 
-export default defineEventHandler(async () => {
+export default defineHandler(async () => {
   try {
     // Test DB connectivity
     await db.execute(sql`SELECT 1`);
@@ -6487,10 +6521,7 @@ export default defineEventHandler(async () => {
       uptime: process.uptime(),
     };
   } catch {
-    throw createError({
-      statusCode: 503,
-      statusMessage: "Service unavailable",
-    });
+    throw new HTTPError(503, { message: "Service unavailable" });
   }
 });
 ```
@@ -7075,7 +7106,12 @@ async function seed() {
   }
 
   // Create admin user
-  const passwordHash = await hashPassword("admin123");
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (!adminPassword) {
+    console.error("ADMIN_PASSWORD environment variable is required");
+    process.exit(1);
+  }
+  const passwordHash = await hashPassword(adminPassword);
   const [adminUser] = await db
     .insert(schema.users)
     .values({
@@ -7096,7 +7132,7 @@ async function seed() {
 
   console.log("Seed complete. Admin user created:");
   console.log("  Username: admin");
-  console.log("  Password: admin123");
+  console.log("  Password: (from ADMIN_PASSWORD env var)");
   console.log("  User ID:", adminUser.id);
 }
 
@@ -7295,52 +7331,52 @@ git commit -m "feat: add role templates for admin and marketing-agent"
 
 ---
 
-## Phase 7: Marketing Agent � Role Template
+## Phase 7: Marketing Agent - Role Template
 
-> **Durum:** Agent tan�m dosyalar� haz�r (marketing-agent/), VPS'te test ve deploy bekliyor.
+> **Durum:** Agent tanım dosyaları hazır (marketing-agent/), VPS'te test ve deploy bekliyor.
 > **Hedef:** `marketing-agent` rolü için kusursuz, otonom çalışan marketing agent oluşturmak.
 
-### Task 7.1: Marketing Agent Skill Setini Tamamla
+### Task 7.3: Marketing Agent Skill Setini Tamamla
 
-- [ ] **Marketing skill'lerini test et** � Her /market komutu i�in en az bir test senaryosu �al��t�r
-  - /market funnel https://orneksite.com � Funnel analizi do�ru ��k�yor mu?
-  - /market seo https://orneksite.com � SEO tespitleri isabetli mi?
-  - /market emails "SaaS CRM �r�n�" � Email sequence mant�kl� m�?
-  - /market social "yapay zeka" � 30 g�nl�k takvim d�zg�n m�?
-  - /market ads https://orneksite.com � Reklam kreatifleri platform limitlerine uygun mu?
-  - /market competitors https://orneksite.com � Rakip analizi yeterli derinlikte mi?
-  - /market launch "AI Chatbot" � 8 haftal�k plan kapsaml� m�?
-  - /market proposal "Tech Corp" � Teklif profesyonel duruyor mu?
-  - /market report https://orneksite.com � 6 boyutlu skorlama tutarl� m�?
-  - /market brand https://orneksite.com � Marka sesi analizi do�ru mu?
+- [ ] **Marketing skill'lerini test et** - Her /market komutu için en az bir test senaryosu çalıştır
+  - /market funnel https://orneksite.com - Funnel analizi doğru çıkıyor mu?
+  - /market seo https://orneksite.com - SEO tespitleri isabetli mi?
+  - /market emails "SaaS CRM ürünü" - Email sequence mantıklı mı?
+  - /market social "yapay zeka" - 30 günlük takvim düzgün mü?
+  - /market ads https://orneksite.com - Reklam kreatifleri platform limitlerine uygun mu?
+  - /market competitors https://orneksite.com - Rakip analizi yeterli derinlikte mi?
+  - /market launch "AI Chatbot" - 8 haftalık plan kapsamlı mı?
+  - /market proposal "Tech Corp" - Teklif profesyonel duruyor mu?
+  - /market report https://orneksite.com - 6 boyutlu skorlama tutarlı mı?
+  - /market brand https://orneksite.com - Marka sesi analizi doğru mu?
 
 - [ ] **Python script'leri test et**
-  - python scripts/analyze_page.py https://orneksite.com � JSON ��kt�s� do�ru mu?
-  - python scripts/competitor_scanner.py https://rakip1.com https://rakip2.com � Do�ru parse ediyor mu?
-  - python scripts/social_calendar.py --topic "AI" --platforms instagram,linkedin � Takvim �retiliyor mu?
-  - python scripts/generate_pdf_report.py --input MARKETING-REPORT.md --output test.pdf � PDF olu�uyor mu?
+  - python scripts/analyze_page.py https://orneksite.com - JSON çıktısı doğru mu?
+  - python scripts/competitor_scanner.py https://rakip1.com https://rakip2.com - Doğru parse ediyor mu?
+  - python scripts/social_calendar.py --topic "AI" --platforms instagram,linkedin - Takvim üretiliyor mu?
+  - python scripts/generate_pdf_report.py --input MARKETING-REPORT.md --output test.pdf - PDF oluşuyor mu?
 
 - [ ] **Skill zincirlerini test et** (SKILLS.md Section D)
-  - Yeni �r�n lansman� zinciri: market-launch � market-brand � market-emails � market-social � landing-page-generator
-  - Rakip sald�r�s� zinciri: market-competitors � competitive-teardown � product-strategist
+  - Yeni ürün lansmanı zinciri: market-launch - market-brand - market-emails - market-social - landing-page-generator
+  - Rakip saldırısı zinciri: market-competitors - competitive-teardown - product-strategist
 
-- [ ] **Eksik skill'leri tamamla** � Testlerde eksik/hatal� ��kan skill'leri d�zelt
-- [ ] **Edge case'leri test et** � JS rendering gerektiren site, 404, timeout, b�y�k site
+- [ ] **Eksik skill'leri tamamla** - Testlerde eksik/hatalı çıkan skill'leri düzelt
+- [ ] **Edge case'leri test et** - JS rendering gerektiren site, 404, timeout, büyük site
 
-### Task 7.2: Puppeteer MCP Kurulumu (VPS)
+### Task 7.4: Puppeteer MCP Kurulumu (VPS)
 
-- [ ] **Chromium ba��ml�l�klar�n� y�kle** (Ubuntu/Debian)
-  `ash
+- [ ] **Chromium bağımlılıklarını yükle** (Ubuntu/Debian)
+  `bash
   sudo apt update
   sudo apt install -y chromium-browser libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2
   `
 
 - [ ] **Puppeteer MCP'yi OpenCode'a register et**
-  `ash
+  `bash
   npx -y @anthropic/mcp-puppeteer --version
   `
 
-- [ ] **OpenCode MCP konfig�rasyonuna ekle** � mcps.json'daki tan�m� OpenCode'un kendi mcp.json/opencode.json dosyas�na entegre et
+- [ ] **OpenCode MCP konfigürasyonuna ekle** - mcps.json'daki tanımı OpenCode'un kendi mcp.json/opencode.json dosyasına entegre et
 
 - [ ] **Test: Puppeteer ile site tara**
   `
@@ -7348,197 +7384,200 @@ git commit -m "feat: add role templates for admin and marketing-agent"
   `
   Expected: Puppeteer MCP ile site render edilip analiz ediliyor.
 
-- [ ] **RAM kullan�m�n� �l�** � htop ile Chromium headless RAM t�ketimini izle, 400MB alt�nda m�?
-- [ ] **Fallback mekanizmas�n� test et** � Puppeteer MCP yan�t vermedi�inde WebFetch'e d���yor mu?
+- [ ] **RAM kullanımını ölç** - htop ile Chromium headless RAM tüketimini izle, 400MB altında mı?
+- [ ] **Fallback mekanizmasını test et** - Puppeteer MCP yanıt vermediğinde WebFetch'e düşüyor mu?
 
-### Task 7.3: PDF Rapor Deste�i
+### Task 7.5: PDF Rapor Desteği
 
 - [ ] **Python reportlab kurulumu**
-  `ash
+  `bash
   pip install reportlab
   `
 
-- [ ] **Test: Markdown � PDF d�n���m�**
-  `ash
+- [ ] **Test: Markdown - PDF dönüşümü**
+  `bash
   python scripts/generate_pdf_report.py --input MARKETING-REPORT.md --output test.pdf
   `
-  Expected: 	est.pdf olu�ur, t�m sayfalar eksiksiz.
+  Expected: test.pdf oluşur, tüm sayfalar eksiksiz.
 
-- [ ] **Fallback test et** � reportlab kurulu de�ilse hata mesaj� do�ru mu?
+- [ ] **Fallback test et** - reportlab kurulu değilse hata mesajı doğru mu?
 
-### Task 7.4: Template Dizini VPS'e Kopyala
+### Task 7.6: Template Dizini VPS'e Kopyala
 
-- [ ] 	emplates/roles/marketing-agent/ dizini olu�tur
-  `ash
+- [ ] **templates/roles/marketing-agent/ alt dizinlerini oluştur**
+  ```bash
   mkdir -p /opt/personalautonomy/templates/roles/marketing-agent/skills
-  `
+  mkdir -p /opt/personalautonomy/templates/roles/marketing-agent/agents
+  mkdir -p /opt/personalautonomy/templates/roles/marketing-agent/pipelines
+  mkdir -p /opt/personalautonomy/templates/roles/marketing-agent/templates
+  mkdir -p /opt/personalautonomy/templates/roles/marketing-agent/vendor
+  ```
 
-- [ ] **Dosyalar� kopyala:**
-  `ash
+- [ ] **Dosyaları ve alt dizinleri kopyala:**
+  ```bash
   cp marketing-agent/AGENTS.md /opt/personalautonomy/templates/roles/marketing-agent/AGENTS.md
   cp -r marketing-agent/skills/* /opt/personalautonomy/templates/roles/marketing-agent/skills/
+  cp -r marketing-agent/agents/* /opt/personalautonomy/templates/roles/marketing-agent/agents/
+  cp -r marketing-agent/pipelines/* /opt/personalautonomy/templates/roles/marketing-agent/pipelines/
+  cp -r marketing-agent/templates/* /opt/personalautonomy/templates/roles/marketing-agent/templates/
+  cp -r marketing-agent/vendor/* /opt/personalautonomy/templates/roles/marketing-agent/vendor/
   cp marketing-agent/mcps.json /opt/personalautonomy/templates/roles/marketing-agent/mcps.json
-  `
+  ```
 
 - [ ] **Script'leri deploy et:**
-  `ash
+  ```bash
   cp marketing-agent/scripts/*.py /opt/personalautonomy/scripts/
   chmod +x /opt/personalautonomy/scripts/*.py
-  `
+  ```
 
-- [ ] **Template'leri deploy et:**
-  `ash
-  cp -r marketing-agent/templates/ /opt/personalautonomy/templates/marketing/
-  `
+- [ ] **Symlink testi** - manage-workspace.sh create ws-test-uuid marketing-agent ile workspace oluştur, symlink'ler doğru çalışıyor mu?
 
-- [ ] **Symlink testi** � manage-workspace.sh create ws-test-uuid marketing-agent ile workspace olu�tur, symlink'ler do�ru �al���yor mu?
+### Task 7.7: Agent Prompt Kalibrasyonu
 
-### Task 7.5: Agent Prompt Kalibrasyonu
+- [ ] **Türkçe kalitesini kontrol et** - Tüm SKILL.md'ler Türkçe, terimler tutarlı mı?
+- [ ] **Tutarlılık testi** - Aynı URL için 2 farklı zamanda /market report çalıştır, skorlar tutarlı mı?
+- [ ] **Derinlik testi** - Agent yüzeysel mi yoksa derinlemesine analiz mi yapıyor?
+- [ ] **Output kalitesi** - Çıktılar müşteriye direkt sunulabilir kalitede mi?
+- [ ] **KPI önerileri** - Agent her çıktıda KPI öneriyor mu?
 
-- [ ] **T�rk�e kalitesini kontrol et** � T�m SKILL.md'ler T�rk�e, terimler tutarl� m�?
-- [ ] **Tutarl�l�k testi** � Ayn� URL i�in 2 farkl� zamanda /market report �al��t�r, skorlar tutarl� m�?
-- [ ] **Derinlik testi** � Agent y�zeysel mi yoksa derinlemesine analiz mi yap�yor?
-- [ ] **Output kalitesi** � ��kt�lar m��teriye direkt sunulabilir kalitede mi?
-- [ ] **KPI �nerileri** � Agent her ��kt�da KPI �neriyor mu?
+### Task 7.8: Otonomi ve Kendi Kendine Çalışma
 
-### Task 7.6: Otonomi ve Kendi Kendine �al��ma
+- [ ] **Skill zincirlerini otonom yap** - Agent, kullanıcı söylemeden hangi skill'i kullanacağını doğru tespit ediyor mu?
+- [ ] **Hata yakalama** - Geçersiz URL, timeout, boş sayfa durumlarını zarifçe handle ediyor mu?
+- [ ] **Kendi çıktılarını okuyabilme** - /market report çıktısından sonra /market report-pdf otomatik tetiklenebiliyor mu?
+- [ ] **Session'lar arası hafıza** - Aynı kullanıcı tekrar geldiğinde önceki analizleri hatırlıyor mu? (Varsa context)
 
-- [ ] **Skill zincirlerini otonom yap** � Agent, kullan�c� s�ylemeden hangi skill'i kullanaca��n� do�ru tespit ediyor mu?
-- [ ] **Hata yakalama** � Ge�ersiz URL, timeout, bo� sayfa durumlar�n� zarif�e handle ediyor mu?
-- [ ] **Kendi ��kt�lar�n� okuyabilme** � /market report ��kt�s�ndan sonra /market report-pdf otomatik tetiklenebiliyor mu?
-- [ ] **Session'lar aras� haf�za** � Ayn� kullan�c� tekrar geldi�inde �nceki analizleri hat�rl�yor mu? (Varsa context)
+### Task 7.9: admin rolü için Agent Yapılandırması
 
-### Task 7.7: admin rol� i�in Agent Yap�land�rmas�
+- [ ] **Admin için agent template oluştur** - Varsa templates/roles/admin/ dizini
+- [ ] **Admin AGENTS.md yaz** - Kullanıcı yönetimi, workspace yönetimi, monitoring yetenekleri
+- [ ] **Admin skill'leri tanımla** - Kullanıcı oluşturma, session izleme, log inceleme
 
-- [ ] **Admin i�in agent template olu�tur** � Varsa 	emplates/roles/admin/ dizini
-- [ ] **Admin AGENTS.md yaz** � Kullan�c� y�netimi, workspace y�netimi, monitoring yetenekleri
-- [ ] **Admin skill'leri tan�mla** � Kullan�c� olu�turma, session izleme, log inceleme
+### Task 7.10: Final Doğrulama ve Dokümantasyon
 
-### Task 7.8: Final Do�rulama ve Dok�mantasyon
-
-- [ ] **T�m skill'leri u�tan uca test et** � Her /market komutu i�in 1 ger�ek site
-- [ ] **Performans testi** � 5 paralel subagent ile audit ne kadar s�r�yor?
-- [ ] **Kaynak kullan�m�** � Agent + Puppeteer + OpenCode toplam RAM/CPU kullan�m�
-- [ ] **Kullan�c� dok�mantasyonu yaz** � Hangi komut ne i�e yarar? (AGENTS.md zaten var, g�zden ge�ir)
-- [ ] **Gelecek repolar i�in TODO** � GitHub'da buldu�un di�er marketing repolar�n� incele, entegre edilecekleri listele
+- [ ] **Tüm skill'leri uçtan uca test et** - Her /market komutu için 1 gerçek site
+- [ ] **Performans testi** - 5 paralel subagent ile audit ne kadar sürüyor?
+- [ ] **Kaynak kullanımı** - Agent + Puppeteer + OpenCode toplam RAM/CPU kullanımı
+- [ ] **Kullanıcı dokümantasyonu yaz** - Hangi komut ne işe yarar? (AGENTS.md zaten var, gözden geçir)
+- [ ] **Gelecek repolar için TODO** - GitHub'da bulduğun diğer marketing repolarını incele, entegre edilecekleri listele
 
 ---
 
-**Bu phase VPS al�nd�ktan ve OpenCode kurulduktan sonra yap�lacak. �imdilik plan olarak kaydedildi.**
+**Bu phase VPS alındıktan ve OpenCode kurulduktan sonra yapılacak. Şimdilik plan olarak kaydedildi.**
 
 ---
 
-## Phase 7 G�ncellemesi: Marketing Agent v3 � coreyhaines31/marketingskills Entegrasyonu
+## Phase 7 Güncellemesi: Marketing Agent v3 - coreyhaines31/marketingskills Entegrasyonu
 
 **Tarih:** 2026-05-30
-**Durum:** Skill tan�mlar� tamamland�. 36 skill marketing-agent/skills/ alt�nda haz�r.
+**Durum:** Skill tanımları tamamlandı. 36 skill marketing-agent/skills/ altında hazır.
 
 ### Entegre edilen 28 skill:
 product-marketing, paywalls, copywriting, copy-editing, cold-email, emails, social, video, image, seo-audit, ai-seo, competitor-profiling, directory-submissions, content-strategy, aso, ads, ad-creative, analytics, referrals, churn-prevention, community-marketing, launch, pricing, prospecting, marketing-ideas, marketing-psychology, customer-research, marketing-plan
 
-### Korunan 7 �zel skill:
+### Korunan 7 özel skill:
 market-funnel, market-ads, market-competitors, market-proposal, market-report, market-report-pdf, market-brand
 
-### Kald�r�lan 4 eski skill (repo versiyonuyla de�i�tirildi):
-market-emails � emails, market-social � social, market-seo � seo-audit, market-launch � launch
+### Kaldırılan 4 eski skill (repo versiyonuyla değiştirildi):
+market-emails -> emails, market-social -> social, market-seo -> seo-audit, market-launch -> launch
 
 ### Video/Image notu:
-API entegrasyonu yok. Sadece strateji/script/prompt �retiyorlar. Proje geli�tirme a�amas�nda Midjourney/DALL-E/HeyGen API entegrasyonu yap�lacak.
+API entegrasyonu yok. Sadece strateji/script/prompt üretiyorlar. Proje geliştirme aşamasında Midjourney/DALL-E/HeyGen API entegrasyonu yapılacak.
 
-### VPS'te yap�lacaklar (Phase 7.1-7.8):
-Beklemede. VPS al�n�nca ve OpenCode kurulunca uygulanacak.
+### VPS'te yapılacaklar (Phase 7.3-7.10):
+Beklemede. VPS alınınca ve OpenCode kurulunca uygulanacak.
 
 ---
 
-### Task 7.9: Social Post Agent � Konu�arak ��erik �retimi
+### Task 7.11: Social Post Agent - Konuşarak İçerik Üretimi
 
-> **Ama�:** Pazarlama Asistan? kullan?c?n?n OpenCode ile do?al sohbet halindeyken, ge?mi? payla??mlar? ve proje ba?lam?n? dikkate alarak g?nl?k sosyal medya g?nderisi haz?rlamas?. Kullan?c? teknik detaylarla u?ra?maz ? agent i?i yapar, kullan?c? sadece onaylar.
+> **Amaç:** Pazarlama Asistanı kullanıcının OpenCode ile doğal sohbet halindeyken, geçmiş paylaşımları ve proje bağlamını dikkate alarak günlük sosyal medya gönderisi hazırlaması. Kullanıcı teknik detaylarla uğraşmaz - agent işi yapar, kullanıcı sadece onaylar.
 
-#### Neden n8n/Telegram/cron de�il?
+#### Neden n8n/Telegram/cron değil?
 
-Kullan�c� zaten OpenCode ile konu�uyor. Ayr� bir araca gitmesine, ayr� bir bot'a mesaj atmas�na gerek yok. Ak�� do�al sohbet i�inde ilerler. Otomasyon de�il, \"insan + AI i�birli�i\" modeli.
+Kullanıcı zaten OpenCode ile konuşuyor. Ayrı bir araca gitmesine, ayrı bir bot'a mesaj atmasına gerek yok. Akış doğal sohbet içinde ilerler. Otomasyon değil, \"insan + AI işbirliği\" modeli.
 
 #### Mimari
 
 `
 Marketing Agent (Web Chat)
-    -  "Bug�nk� Instagram g�nderisini haz�rlayal�m"
-    �
+    -  "Bugünkü Instagram gönderisini hazırlayalım"
+    ->
 OpenCode social-post agent
     -
-    +�� ? product-marketing context'ini okur
-    +�� ? post-history.md'den son 10 g�nderiyi okur
-    +�� ? social skill'ten stratejiyi referans al�r
-    +�� ? Kullan�c�ya 1-2 soru sorar:
-    -      "Bug�n e�itim i�eri�i mi, �r�n tan�t�m� m�?"
-    -      "�u anki odak noktam�z: X �zelli�inin lansman�. Buna uygun mu?"
-    +�� ? copywriting skill ile caption + hashtag yazar
-    +�� ? image skill ile g�rsel promptu �retir
-    +�� ? Kullan�c�ya sorar: "Bu prompt ile g�rsel �retmemi onayl�yor musun?"
-    +�� ? Onay � Minimax API �a�r�s� � g�rsel workspace'e kaydedilir
-    +�� ? Kullan�c�ya sunar:
-    -      -�������������������������������
-    -      - ? G�nderin Haz�r!            -
+    +--> ? product-marketing context'ini okur
+    +--> ? post-history.md'den son 10 gönderiyi okur
+    +--> ? social skill'ten stratejiyi referans alır
+    +--> ? Kullanıcıya 1-2 soru sorar:
+    -      "Bugün eğitim içeriği mi, ürün tanıtımı mı?"
+    -      "Şu anki odak noktamız: X özelliğinin lansmanı. Buna uygun mu?"
+    +--> ? copywriting skill ile caption + hashtag yazar
+    +--> ? image skill ile görsel promptu üretir
+    +--> ? Kullanıcıya sorar: "Bu prompt ile görsel üretmemi onaylıyor musun?"
+    +--> ? Onay -> Minimax API çağrısı -> görsel workspace'e kaydedilir
+    +--> ? Kullanıcıya sunar:
+    -      +--------------------------------+
+    -      - ✓ Gönderin Hazır!            -
     -      -                              -
-    -      - ?? G�rsel: haz�r (indir)     -
+    -      - ✅ Görsel: hazır (indir)     -
     -      -                              -
-    -      - ?? Caption:                   -
+    -      - ✅ Caption:                   -
     -      - "Proje teslim tarihlerini     -
-    -      -  ka��rmaktan s�k�ld�n m�?    -
+    -      -  kaçırmaktan sıkıldın mı?    -
     -      -  ..."                        -
     -      -                              -
-    -      - #?? #proje #verimlilik        -
+    -      - #ai #proje #verimlilik        -
     -      -                              -
-    -      - ?? Web aray�z�nden            -
-    -      -    'Payla��mlar' sekmesinden  -
-    -      -    g�rseli indirip            -
+    -      - ✅ Web arayüzünden            -
+    -      -    'Paylaşımlar' sekmesinden  -
+    -      -    görseli indirip            -
     -      -    kullanabilirsin.           -
-    -      L������������������������������-
-    +�� ? Onaylan�nca post-history.md'ye ekler
-    L�� ? Kullan�c� web UI'dan g�rseli indirir, platformda payla��r
+    -      +--------------------------------+
+    +--> ? Onaylanınca post-history.md'ye ekler
+    +-> ? Kullanıcı web UI'dan görseli indirir, platformda paylaşır
 `
 
-#### Bile�enler
+#### Bileşenler
 
-| # | Bile�en | A��klama | Konum |
+| # | Bileşen | Açıklama | Konum |
 |---|---------|----------|-------|
-| 1 | **social-post agent** | T�m ak��� y�neten �zel OpenCode agent'� | 	emplates/roles/marketing-agent/agents/social-post.md |
-| 2 | **post-history.md** | Workspace'te ge�mi� g�nderilerin log'u. Tarih, platform, caption, hashtag, g�rsel path'i. Her yeni g�nderide buraya yaz�l�r. | Workspace k�k dizini |
-| 3 | **Minimax image script** | Prompt al�r, Minimax API'sine POST atar, g�rseli workspace'e kaydeder. | scripts/minimax_generate_image.py |
-| 4 | **Web UI \"Payla��mlar\" sekmesi** | Kullan�c�n�n �retilen t�m g�nderileri listeleyip g�rselleri indirebildi�i aray�z. | pps/web/src/routes/posts.tsx |
-| 5 | **Disk temizleme cron** | 30 g�nden eski g�rselleri siler (disk dolmas�n). | VPS crontab:   3 * * * find ... -mtime +30 -delete |
+| 1 | **social-post agent** | Tüm akışı yöneten özel OpenCode agent'ı | templates/roles/marketing-agent/agents/social-post.md |
+| 2 | **post-history.md** | Workspace'te geçmiş gönderilerin log'u. Tarih, platform, caption, hashtag, görsel path'i. Her yeni gönderide buraya yazılır. | Workspace kök dizini |
+| 3 | **Minimax image script** | Prompt alır, Minimax API'sine POST atar, görseli workspace'e kaydeder. | scripts/minimax_generate_image.py |
+| 4 | **Web UI "Paylaşımlar" sekmesi** | Kullanıcının üretilen tüm gönderileri listeleyip görselleri indirebildiği arayüz. | apps/web/src/routes/posts.tsx |
+| 5 | **Disk temizleme cron** | 30 günden eski görselleri siler (disk dolmasın). | VPS crontab: 0 3 * * * find ... -mtime +30 -delete |
 
-#### social-post agent davran�� kurallar�
+#### social-post agent davranış kuralları
 
-Agent **teknik olmayan** kullan�c�lar i�indir. �u kurallara uyar:
+Agent **teknik olmayan** kullanıcılar içindir. Şu kurallara uyar:
 
-1. **Kullan�c�ya asla teknik detay sorma.** \"Minimax API endpoint'i ne olsun?\" gibi sorular YOK.
-2. **Kullan�c�ya asla \"�u promptu kullanarak image �retebilirsin\" deme.** Onun yerine \"Bu prompt ile g�rsel �retmemi onayl�yor musun?\" de. ��i sen yap.
-3. **Az sor, �ok i� yap.** Maksimum 1-2 soru sor. Gerisini sen hallet.
-4. **Ge�mi�i bil.** post-history.md'den son g�nderileri oku, ayn� �eyi tekrarlama.
-5. **Ba�lam� bil.** product-marketing context'inden �r�n�, social skill'ten stratejiyi oku.
-6. **Sonucu net g�ster.** G�nderi haz�r oldu�unda caption, hashtag, g�rsel durumunu d�zenli g�ster.
-7. **Web UI'a y�nlendir.** Kullan�c�ya \"Payla��mlar sekmesinden g�rseli indirebilirsin\" de. Dosya yolu verme.
-8. **T�rk�e konu�.** T�m ileti�im T�rk�e.
+1. **Kullanıcıya asla teknik detay sorma.** "Minimax API endpoint'i ne olsun?" gibi sorular YOK.
+2. **Kullanıcıya asla "Şu promptu kullanarak image üretebilirsin" deme.** Onun yerine "Bu prompt ile görsel üretmemi onaylıyor musun?" de. İşi sen yap.
+3. **Az sor, çok iş yap.** Maksimum 1-2 soru sor. Gerisini sen hallet.
+4. **Geçmişi bil.** post-history.md'den son gönderileri oku, aynı şeyi tekrarlama.
+5. **Bağlamı bil.** product-marketing context'inden ürünü, social skill'ten stratejiyi oku.
+6. **Sonucu net göster.** Gönderi hazır olduğunda caption, hashtag, görsel durumunu düzenli göster.
+7. **Web UI'a yönlendir.** Kullanıcıya "Paylaşımlar sekmesinden görseli indirebilirsin" de. Dosya yolu verme.
+8. **Türkçe konuş.** Tüm iletişim Türkçe.
 
-#### post-history.md format�
+#### post-history.md formatı
 
 `markdown
 # Post History
 
-## 2026-05-30 � Instagram
-- **T�r:** E�itim
-- **Caption:** Proje teslim tarihlerini ka��rmaktan s�k�ld�n m�? ��te 3 ad�mda...
+## 2026-05-30 - Instagram
+- **Tür:** Eğitim
+- **Caption:** Proje teslim tarihlerini kaçırmaktan sıkıldın mı? İşte 3 adımda...
 - **Hashtag:** #proje #verimlilik #saas
-- **G�rsel:** posts/2026-05-30-instagram.png
-- **Durum:** ? Payla��ld�
+- **Görsel:** posts/2026-05-30-instagram.png
+- **Durum:** ✓ Paylaşıldı
 
-## 2026-05-29 � Twitter
-- **T�r:** Sosyal kan�t
-- **Caption:** M��terimiz TechCorp, ProjectFlow ile haftada 5 saat kazand�...
-- **Hashtag:** #ba�ar� #m��teri
-- **G�rsel:** posts/2026-05-29-twitter.png
-- **Durum:** ? Payla��ld�
+## 2026-05-29 - Twitter
+- **Tür:** Sosyal kanıt
+- **Caption:** Müşterimiz TechCorp, ProjectFlow ile haftada 5 saat kazandı...
+- **Hashtag:** #başarı #müşteri
+- **Görsel:** posts/2026-05-29-twitter.png
+- **Durum:** ✓ Paylaşıldı
 `
 
 #### Minimax Image Script (Python)
@@ -7548,7 +7587,7 @@ scripts/minimax_generate_image.py:
 `python
 """
 Minimax Image Generation Script
-Kullan�m: python minimax_generate_image.py --prompt "..." --output posts/image.png
+Kullanım: python minimax_generate_image.py --prompt "..." --output posts/image.png
 """
 import sys, json, argparse, requests, os
 from pathlib import Path
@@ -7570,7 +7609,7 @@ def generate(prompt: str, output_path: str):
     resp = requests.post(MINIMAX_IMAGE_URL, json=body, headers=headers, timeout=60)
     data = resp.json()
     
-    # G�rseli indir
+    # Görseli indir
     image_url = data["data"][0]["url"]
     img = requests.get(image_url)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -7585,24 +7624,24 @@ if __name__ == "__main__":
     generate(args.prompt, args.output)
 `
 
-#### Web UI \"Payla��mlar\" Sekmesi
+#### Web UI "Paylaşımlar" Sekmesi
 
-pps/web/src/routes/posts.tsx:
+apps/web/src/routes/posts.tsx:
 
-- Kullan�c�n�n t�m g�nderilerini listeleyen tablo
-- Her g�nderi: tarih, platform, t�r, caption �nizlemesi
-- G�rsel thumbnail + indirme butonu
-- \"Payla��ld�\" tik i�areti (checkbox)
-- Filtre: platforma g�re, tarihe g�re
-- Basit, temiz tasar�m
+- Kullanıcının tüm gönderilerini listeleyen tablo
+- Her gönderi: tarih, platform, tür, caption önizlemesi
+- Görsel thumbnail + indirme butonu
+- "Paylaşıldı" tik işareti (checkbox)
+- Filtre: platforma göre, tarihe göre
+- Basit, temiz tasarım
 
 #### Disk Temizleme
 
-`ash
-# Her gece 03:00'te 30 g�nden eski g�rselleri sil
+`bash
+# Her gece 03:00'te 30 günden eski görselleri sil
 0 3 * * * find /opt/personalautonomy/workspaces/*/posts/ -type f -mtime +30 -delete
 `
 
-Veya bu i�lem workspace-manager servisine hook olarak eklenebilir.
+Veya bu işlem workspace-manager servisine hook olarak eklenebilir.
 
-> **NOT:** G�rsel �retimi i�in hangi API'nin kullan�laca�� (Minimax, DALL-E, Stable Diffusion, Midjourney vb.) implementasyon a�amas�nda kararla�t�r�lacakt�r. Se�im kriterleri: API maliyeti, g�rsel kalitesi, prompt uyumlulu�u, rate limit, SDK/API kolayl���. Yukar�daki kod �rnekleri referans ama�l�d�r, se�ilen API'ye g�re g�ncellenecektir.
+> **NOT:** Görsel üretimi için hangi API'nin kullanılacağı (Minimax, DALL-E, Stable Diffusion, Midjourney vb.) implementasyon aşamasında kararlaştırılacaktır. Seçim kriterleri: API maliyeti, görsel kalitesi, prompt uyumluluğu, rate limit, SDK/API kolaylığı. Yukarıdaki kod örnekleri referans amaçlıdır, seçilen API'ye göre güncellenecektir.

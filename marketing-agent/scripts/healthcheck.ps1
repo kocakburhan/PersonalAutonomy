@@ -64,7 +64,7 @@ Write-Output ""
 
 # --- Python Scripts ---
 Write-Output "--- Python Scripts ---"
-$scripts = @("google_trends.py", "reddit_scraper.py", "estimate_revenue.py", "analyze_page.py", "competitor_scanner.py", "generate_pdf_report.py", "social_calendar.py")
+$scripts = @("google_trends.py", "reddit_scraper.py", "estimate_revenue.py", "analyze_page.py", "competitor_scanner.py", "generate_pdf_report.py", "social_calendar.py", "roi_calculator.py")
 foreach ($s in $scripts) {
     $path = Join-Path $Root "scripts\$s"
     if (Test-Path $path) {

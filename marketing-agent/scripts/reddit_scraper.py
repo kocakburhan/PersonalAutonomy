@@ -148,19 +148,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     keywords = [k.strip() for k in args.keywords.split(",")]
+    subreddits_list = [s.strip() for s in args.subreddits.split(",")] if args.subreddits else []
 
     if args.all_reddit:
         results = search_keywords_across_reddit(keywords, args.limit)
     else:
-        subreddits = [s.strip() for s in args.subreddits.split(",")] if args.subreddits else []
-        if not subreddits:
+        if not subreddits_list:
             print(json.dumps({"error": "--subreddits required (or use --all-reddit)"}, ensure_ascii=False))
             sys.exit(1)
-        results = search_subreddits(subreddits, keywords, args.sort, args.limit)
+        results = search_subreddits(subreddits_list, keywords, args.sort, args.limit)
 
     output = {
         "queried_at": datetime.now().isoformat(),
-        "subreddits": subreddits if not args.all_reddit else "all",
+        "subreddits": subreddits_list if not args.all_reddit else "all",
         "keywords": keywords,
         "sort": args.sort,
         "result_count": len(results),

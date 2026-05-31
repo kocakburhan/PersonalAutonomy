@@ -16,6 +16,7 @@ Metrik takibi, veri analizi, performans raporlaması ve PDF üretimi yapan agent
 - `scripts/analyze_page.py` — Tek sayfa analizi (SEO, içerik, dönüşüm skoru)
 - `scripts/generate_pdf_report.py` — Markdown raporu PDF'e çevirme
 - `scripts/estimate_revenue.py` — App Store verisinden gelir tahmini. `--ratings X --price Y` veya `--json mcp_verisi.json`
+- `scripts/roi_calculator.py` — LTV, CAC, LTV/CAC oranı, payback süresi ve kampanya ROI hesaplama. `--ltv --avg-price X --churn-rate Y` veya `--campaign --budget X --conversions Y`
 
 ## Aldığın Görevler
 
@@ -99,6 +100,9 @@ Google Maps görüntülenme, arama, tıklama, web sitesi trafiği.
 |--------|-------|-------|
 | Randevu/iletişim | [sayı] | [hedef] |
 ```
+
+### 6. Birim Ekonomi ve ROI Hesaplama
+`roi_calculator.py` script'i ile LTV, CAC, payback süresi hesapla.
 
 ## Rapor Formatın
 

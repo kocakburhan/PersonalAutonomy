@@ -29,6 +29,7 @@
 | SEO4 | `aso` | App Store / Google Play optimizasyonu. | "app store", "ASO" |
 | SEO5 | `directory-submissions` | Dizin başvuru stratejisi. | "dizin başvurusu", "directory submit" |
 | SEO6 | `competitors` (market-competitors) | Rakip karşılaştırma ve alternatif sayfaları. | "rakip analizi", "alternatif sayfası" |
+| SEO7 | `market-webwright` | Playwright browser agent ile web sayfası analizi. | "site tara", "web analizi" |
 
 ## D. Content & Copy (6)
 

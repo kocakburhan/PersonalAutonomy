@@ -73,7 +73,12 @@ class MarketingPageParser(HTMLParser):
                 self.scripts.append(src)
 
     def handle_endtag(self, tag):
-        if self.in_button and tag == "button":
+        if tag == "title":
+            self.in_title = False
+        elif tag in ("h1", "h2", "h3"):
+            setattr(self, f"in_{tag}", False)
+            self.current_tag = ""
+        elif self.in_button and tag == "button":
             self.buttons.append({
                 "text": self._current_data.strip() if hasattr(self, '_current_data') else "",
                 "attrs": self.current_attrs
