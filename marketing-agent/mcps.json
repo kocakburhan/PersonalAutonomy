@@ -1,0 +1,33 @@
+{
+  "version": "2.1",
+  "mcps": [],
+  "browser_tools": [
+    {
+      "id": "webwright",
+      "name": "Webwright Browser Agent",
+      "type": "skill",
+      "description": "Playwright tabanli LLM-driven browser agent. Multi-step navigasyon, JS render, form doldurma, dinamik sayfa scraping. Tekrar kullanilabilir CLI tool uretimi (/webwright:craft). Host agent tarafindan native surulur — ek API key gerektirmez.",
+      "source": "https://github.com/microsoft/Webwright",
+      "install": [
+        "git clone https://github.com/microsoft/Webwright vendor/webwright",
+        "pip install -e vendor/webwright",
+        "playwright install chromium"
+      ],
+      "commands": {
+        "run": "/webwright:run <task> — tek seferlik script",
+        "craft": "/webwright:craft <task> — parametrik yeniden kullanilabilir CLI tool"
+      },
+      "usage": "Kompleks web islemlerinde birincil arac. Login, multi-step navigasyon, JS-heavy sayfalar, form doldurma gerektiren durumlarda kullan.",
+      "fallback": "Statik HTML icerik icin WebFetch.",
+      "vps_requirements": {
+        "python": "3.10+",
+        "browser": "Chromium (playwright install chromium)",
+        "ram": "~300-400MB"
+      }
+    }
+  ],
+  "notes": {
+    "migration": "Puppeteer MCP kaldirildi (v2.0 → v2.1). Webwright ayni isleri daha yetenekli yapiyor, ek RAM maliyeti yok.",
+    "fallback": "Webwright kullanilamiyorsa statik sayfalar icin WebFetch kullan."
+  }
+}
